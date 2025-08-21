@@ -1,77 +1,76 @@
-import { NextRequest, NextResponse } from "next/server";
-import { fetchRaw, parseHTML, linkAudit, robotsAudit, UA } from "@/lib/seo";
-import { fetchPageSpeed } from "@/lib/pagespeed";
-export const runtime = "nodejs"; // needed for Playwright
+// app/api/analyze/route.ts
+export const runtime = "nodejs"; // ensure not running on edge
 
-async function renderWithPlaywright(url: string, timeoutMs = 30000): Promise<string | null> {
-  try {
-    const { chromium } = await import("playwright");
-    const browser = await chromium.launch();
-    const context = await browser.newContext({ userAgent: UA });
-    const page = await context.newPage();
-    await page.goto(url, { waitUntil: "networkidle", timeout: timeoutMs });
-    const html = await page.content();
-    await browser.close();
-    return html;
-  } catch {
-    return null;
+import { NextResponse } from "next/server";
+import { fetchRaw, parseHTML, linkAudit, robotsAudit } from "@/lib/seo";
+import { renderHTML, summarizeRendered, makeRenderedDiff } from "@/lib/render";
+
+// Minimal PageSpeed fetcher (uses env PAGESPEED_API_KEY if present)
+async function fetchPageSpeed(url: string) {
+  const key = process.env.PAGESPEED_API_KEY;
+  if (!key) return { enabled: false };
+  const base = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
+  const out: any = { enabled: true };
+  for (const strategy of ["mobile", "desktop"]) {
+    try {
+      const r = await fetch(`${base}?url=${encodeURIComponent(url)}&strategy=${strategy}&key=${key}`, { cache: "no-store" });
+      if (!r.ok) { out[strategy] = { error: `HTTP ${r.status}` }; continue; }
+      const data = await r.json();
+      const cat = data?.lighthouseResult?.categories?.performance;
+      const score = typeof cat?.score === "number" ? Math.round(cat.score * 100) : null;
+      const audits = data?.lighthouseResult?.audits || {};
+      const keys = [
+        "first-contentful-paint",
+        "speed-index",
+        "largest-contentful-paint",
+        "total-blocking-time",
+        "cumulative-layout-shift",
+        "server-response-time",
+      ];
+      out[strategy] = { score, metrics: Object.fromEntries(keys.map(k => [k, audits[k]])) };
+    } catch (e: any) {
+      out[strategy] = { error: String(e?.message || e) };
+    }
   }
+  return out;
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = await req.json();
-    const url = String(body?.url || "").trim();
-    const do_rendered_check = Boolean(body?.do_rendered_check);
-    if (!url) return NextResponse.json({ error: "No URL" }, { status: 400 });
+    const { url, do_rendered_check = true } = await req.json();
+    if (!url) return NextResponse.json({ error: "url required" }, { status: 400 });
 
-    // Phase 1: Static fetch + parse
-    const raw = await fetchRaw(url);
-    const base = parseHTML(url, raw.body, { ...raw.headers, status: String(raw.status) }, raw.load_ms);
+    // Phase 1: fetch & parse
+    const net = await fetchRaw(url);
+    const base = parseHTML(url, net.body, { ...net.headers, status: String(net.status) }, net.load_ms);
 
-    // Performance snapshot
-    const final_url = raw.final_url || url;
-    const is_https = (new URL(final_url)).protocol === "https:";
+    // Basic perf snapshot
     (base as any).performance = {
-      load_time_ms: raw.load_ms,
-      page_size_bytes: Number(raw.headers["content-length"] || Buffer.byteLength(raw.body, "utf8")),
-      http_version: raw.http_version,
-      redirects: raw.redirects,
-      final_url,
-      https: { is_https, ssl_checked: false, ssl_ok: null },
+      load_time_ms: net.load_ms,
+      http_version: net.http_version || null,
+      redirects: net.redirects || 0,
+      final_url: net.final_url || url,
     };
 
-    // Phase 2: link checks + robots/sitemaps
-    (base as any).link_checks = await linkAudit(base);
-    (base as any).crawl_checks = await robotsAudit(base);
+    // Phase 2
+    const [links, crawl] = await Promise.all([linkAudit(base), robotsAudit(base)]);
+    (base as any).link_checks = links;
+    (base as any).crawl_checks = crawl;
 
-    // Optional rendered comparison
-    let used_js_primary = false;
+    // Optional: PageSpeed
+    (base as any).pagespeed = await fetchPageSpeed((base as any).performance.final_url || url);
+
+    // Phase 3: Rendered compare (Playwright)
     if (do_rendered_check) {
-      const html2 = await renderWithPlaywright(final_url);
-      if (html2) {
-        const rParsed = parseHTML(final_url, html2, { status: "200" }, raw.load_ms);
-        (base as any).rendered_diff = {
-          rendered: true,
-          title_changed: (base as any).title !== rParsed.title,
-          description_changed: (base as any).description !== rParsed.description,
-          h1_count_changed: ((base as any).h1 || []).length !== (rParsed.h1 || []).length,
-          after: {
-            title: rParsed.title,
-            description: rParsed.description,
-            h1_count: (rParsed.h1 || []).length,
-            json_ld_count: (rParsed.json_ld || []).length,
-          }
-        };
-        used_js_primary = true;
+      const html = await renderHTML((base as any).performance.final_url || url);
+      if (html) {
+        const summary = summarizeRendered((base as any).performance.final_url || url, html);
+        (base as any).rendered_diff = makeRenderedDiff(base, summary);
+        (base as any).rendered_diff.render_excerpt = html.slice(0, 2000);
       } else {
-        (base as any).rendered_diff = { rendered: false, error: "Playwright render skipped/failed" };
+        (base as any).rendered_diff = { rendered: false, error: "Playwright render failed or blocked" };
       }
     }
-
-    // PSI
-    (base as any).pagespeed = await fetchPageSpeed(final_url);
-    (base as any).notes = Object.assign({}, (base as any).notes || {}, { used_js_fallback: used_js_primary });
 
     return NextResponse.json(base);
   } catch (e: any) {
