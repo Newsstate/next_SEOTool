@@ -279,3 +279,26 @@ export const Table = DataTable;
 
 // Default export (optional)
 export default DataTable;
+
+/* ---------- safe property helpers ---------- */
+
+/** True if v is a non-null object. */
+export function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object";
+}
+
+/** Safely extract a printable value from either a primitive or { value, ok } objects. */
+export function safeCheckValue(v: unknown): string {
+  try {
+    if (!isRecord(v)) return v == null ? "—" : String(v);
+    if (Object.prototype.hasOwnProperty.call(v, "value")) {
+      const val = (v as any).value;
+      return val == null || isRecord(val) ? JSON.stringify(val ?? null) : String(val);
+    }
+    const s = JSON.stringify(v);
+    return s.length > 200 ? s.slice(0, 200) + "…" : s;
+  } catch {
+    return "—";
+  }
+}
+
