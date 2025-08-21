@@ -1,6 +1,6 @@
 // components/Results.tsx
 "use client";
-
+import { safeCheckValue } from "@/lib/format";
 import * as React from "react";
 import { Card } from "@/components/card"; // or "@/components/ui/card" if you prefer
 import {
