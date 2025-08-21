@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: seo-insight-next
+    env: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: PAGESPEED_API_KEY
+        sync: false
+      - key: SEO_UA
+        value: Mozilla/5.0 (compatible; SEO-Analyzer-Next/1.0; +https://example.local)
+      - key: HTTP_TIMEOUT_MS
+        value: "20000"
