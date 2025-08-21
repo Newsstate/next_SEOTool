@@ -176,7 +176,7 @@ export function parseHTML(url: string, body: string, headers: Record<string,stri
     const rel = (a.attribs["rel"] || "").toLowerCase();
     if (rel.includes("nofollow")) {
       const href = a.attribs["href"] || "";
-      try { nofollow_links.append(new URL(href, url).toString()); } catch {}
+      try { nofollow_links.push(new URL(href, url).toString());} catch {}
     }
   });
 
