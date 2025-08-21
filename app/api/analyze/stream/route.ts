@@ -1,7 +1,7 @@
 // app/api/analyze/stream/route.ts
 export const runtime = "nodejs";
 
-import { fetchRaw, parseHTML, linkAudit, robotsAudit } from "@/lib/seo";
+import { fetchRaw, parseHTML, linkAudit, robotsAudit, buildCompareRows, findSitemapMembership } from "@/lib/seo";
 import { renderHTML, summarizeRendered, makeRenderedDiff } from "@/lib/render";
 
 async function fetchPageSpeed(url: string) {
@@ -39,12 +39,11 @@ function sse(data: any, event = "message") {
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
-  const url = searchParams.get("url");
+  const url = searchParams.get("url") || "";
   const doRendered = searchParams.get("do_rendered_check") === "true";
+  const doPagespeed = searchParams.get("do_pagespeed") !== "false"; // default true
 
-  if (!url) {
-    return new Response("url required", { status: 400 });
-  }
+  if (!url) return new Response("url required", { status: 400 });
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -72,11 +71,39 @@ export async function GET(req: Request) {
 
         send({ stage: "robots", status: "start" }, "stage");
         base.crawl_checks = await robotsAudit(base);
+        // sitemap membership
+        const smUrls = (base?.crawl_checks?.sitemaps || []).map((s: any) => s.url).filter(Boolean);
+        base.sitemap_membership = await findSitemapMembership(base.performance.final_url || url, smUrls);
         send({ stage: "robots", status: "done" }, "stage");
 
-        send({ stage: "pagespeed", status: "start" }, "stage");
-        base.pagespeed = await fetchPageSpeed(base.performance.final_url || url);
-        send({ stage: "pagespeed", status: "done" }, "stage");
+        // AMP compare (static)
+        {
+          const is_amp = !!base.is_amp;
+          const amp_url = base.amp_url as string | undefined;
+          const canonical = base.canonical as string | undefined;
+          let nonAmpObj = base;
+          let ampObj: any = null;
+
+          if (is_amp && canonical) {
+            const otherNet = await fetchRaw(canonical);
+            ampObj = base;
+            nonAmpObj = parseHTML(canonical, otherNet.body, { ...otherNet.headers, status: String(otherNet.status) }, otherNet.load_ms);
+          } else if (!is_amp && amp_url) {
+            const otherNet = await fetchRaw(amp_url);
+            ampObj = parseHTML(amp_url, otherNet.body, { ...otherNet.headers, status: String(otherNet.status) }, otherNet.load_ms);
+          }
+
+          base.amp_compare = ampObj ? { non_amp: nonAmpObj, amp: ampObj, ...buildCompareRows(nonAmpObj, ampObj) } : null;
+        }
+
+        if (doPagespeed) {
+          send({ stage: "pagespeed", status: "start" }, "stage");
+          base.pagespeed = await fetchPageSpeed(base.performance.final_url || url);
+          send({ stage: "pagespeed", status: "done" }, "stage");
+        } else {
+          base.pagespeed = { enabled: false, skipped: true };
+          send({ stage: "pagespeed", status: "skipped" }, "stage");
+        }
 
         if (doRendered) {
           send({ stage: "rendered", status: "start" }, "stage");
@@ -97,8 +124,7 @@ export async function GET(req: Request) {
         send({ result: base }, "done");
         controller.close();
       } catch (e: any) {
-        const err = String(e?.message || e);
-        controller.enqueue(new TextEncoder().encode(sse({ error: err }, "error")));
+        controller.enqueue(new TextEncoder().encode(sse({ error: String(e?.message || e) }, "error")));
         controller.close();
       }
     },
