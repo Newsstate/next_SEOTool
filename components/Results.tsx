@@ -2,7 +2,16 @@
 import { Card } from "@/components/ui/Card";
 import { Accordion, AccordionItem } from "@/components/ui/Accordion";
 import { Badge } from "@/components/ui/Badge";
-import { copy, labelize, scoreVariant, fmtMs, fmtSec, statusVariantFromCode, boolVariant, metricValue } from "@/lib/format";
+import {
+  copy,
+  labelize,
+  scoreVariant,
+  statusVariantFromCode,
+  boolVariant,
+  metricValue,
+  metricVariant,
+  Table,
+} from "@/lib/format";
 
 export function Results({ data }: { data: any }) {
   const basic = [
@@ -18,6 +27,8 @@ export function Results({ data }: { data: any }) {
     ["AMP URL", data.amp_url],
   ];
 
+  const ampChanges = data?.amp_compare?.changes ?? 0;
+
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       {/* Overview */}
@@ -30,6 +41,7 @@ export function Results({ data }: { data: any }) {
             {data.sd_types?.has_newsarticle && <Badge variant="blue">NewsArticle</Badge>}
           </div>
         </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
           {basic.map(([label, value]) => (
             <div key={label as string} className="flex flex-col">
@@ -38,9 +50,18 @@ export function Results({ data }: { data: any }) {
             </div>
           ))}
         </div>
+
+        {/* AMP quick collapsible inside Overview */}
+        {data?.amp_compare && (
+          <Accordion className="mt-4">
+            <AccordionItem title={`AMP vs Non-AMP (${ampChanges} change${ampChanges === 1 ? "" : "s"})`}>
+              <AmpCompare cmp={data.amp_compare} />
+            </AccordionItem>
+          </Accordion>
+        )}
       </Card>
 
-      {/* Checks (colored) */}
+      {/* Checks */}
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-4">SEO Checks</h2>
         <div className="grid grid-cols-2 gap-3 text-sm">
@@ -59,7 +80,6 @@ export function Results({ data }: { data: any }) {
                 <div className="mt-1 text-xs text-slate-500">length: {v.chars}</div>
               )}
 
-              {/* Special case: alt coverage progress bar */}
               {k === "alt_coverage" && typeof v?.percent === "number" && (
                 <div className="mt-2">
                   <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
@@ -93,39 +113,10 @@ export function Results({ data }: { data: any }) {
         </div>
 
         <Accordion>
-          {/* JSON-LD Validation summary rendered nicely */}
           <AccordionItem title={`JSON-LD Validation (items: ${data?.json_ld_validation?.summary?.total_items ?? 0})`}>
-            <div className="space-y-2 text-sm">
-              <div className="flex items-center gap-2">
-                <Badge variant="success">OK: {data?.json_ld_validation?.summary?.ok_count ?? 0}</Badge>
-                <Badge variant={(data?.json_ld_validation?.summary?.has_errors ? "warning" : "success") as any}>
-                  {data?.json_ld_validation?.summary?.has_errors ? "Has Issues" : "All Good"}
-                </Badge>
-              </div>
-              <div className="mt-2 space-y-2">
-                {(data?.json_ld_validation?.items || []).map((it: any, i: number) => (
-                  <div
-                    key={i}
-                    className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-3 flex items-start justify-between gap-3"
-                  >
-                    <div>
-                      <div className="font-medium">{it.type || "Unknown"}</div>
-                      {it.missing?.length ? (
-                        <div className="text-xs text-amber-700 dark:text-amber-200 mt-1">
-                          Missing: {it.missing.join(", ")}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-slate-500">All required fields present</div>
-                      )}
-                    </div>
-                    <Badge variant={it.ok ? "success" : "warning"}>{it.ok ? "OK" : "Fix"}</Badge>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <JsonLdValidation summary={data?.json_ld_validation} />
           </AccordionItem>
 
-          {/* Raw JSON blocks still available under collapsible sections */}
           <AccordionItem title={`JSON-LD (${(data.json_ld || []).length}) • raw`}>
             <pre className="mt-3">{JSON.stringify(data.json_ld || [], null, 2)}</pre>
           </AccordionItem>
@@ -142,7 +133,7 @@ export function Results({ data }: { data: any }) {
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-4">Links & Crawlability</h2>
 
-        {/* Robots & Sitemaps (pretty) */}
+        {/* Robots & Sitemaps pretty */}
         <div className="rounded-xl border border-slate-200/60 dark:border-slate-800 p-3 mb-4 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">robots.txt:</span>
@@ -167,27 +158,29 @@ export function Results({ data }: { data: any }) {
               {data?.crawl_checks?.blocked_by_robots ? "Possibly" : "Allowed"}
             </Badge>
           </div>
+
+          {/* Which sitemap contains this URL */}
           <div className="mt-3">
-            <div className="font-medium mb-1">Sitemaps</div>
-            <div className="grid gap-2">
-              {(data?.crawl_checks?.sitemaps || []).map((sm: any, i: number) => (
-                <div key={i} className="flex items-center gap-2">
-                  {typeof sm.status === "number" ? (
-                    <Badge variant={statusVariantFromCode(sm.status) as any}>{sm.status}</Badge>
-                  ) : (
-                    <Badge variant="neutral">info</Badge>
-                  )}
-                  <a href={sm.url} target="_blank" rel="noreferrer" className="underline break-all">
-                    {sm.url}
-                  </a>
-                  {sm.note && <span className="text-xs text-slate-500">({sm.note})</span>}
-                  {sm.error && <span className="text-xs text-rose-600 dark:text-rose-300">({sm.error})</span>}
+            <div className="font-medium mb-1">Sitemap membership</div>
+            {data?.sitemap_membership?.found ? (
+              <div className="space-y-1">
+                <div className="text-sm">
+                  Found in:{" "}
+                  {data.sitemap_membership.matches.map((m: string, i: number) => (
+                    <a key={i} className="underline" href={m} target="_blank" rel="noreferrer">
+                      {m}
+                    </a>
+                  ))}
                 </div>
-              ))}
-              {!data?.crawl_checks?.sitemaps?.length && (
-                <div className="text-xs text-slate-500">No sitemaps found in robots.txt</div>
-              )}
-            </div>
+                <div className="text-xs text-slate-500">
+                  Checked {data.sitemap_membership.checked_count} sitemap{data.sitemap_membership.checked_count === 1 ? "" : "s"}.
+                </div>
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500">
+                Not found in discovered sitemaps (checked {data?.sitemap_membership?.checked_count ?? 0}).
+              </div>
+            )}
           </div>
         </div>
 
@@ -214,15 +207,18 @@ export function Results({ data }: { data: any }) {
           <div>Redirects: <span className="font-medium">{data?.performance?.redirects ?? 0}</span></div>
         </div>
 
-        {data.pagespeed?.enabled && (
+        {data.pagespeed?.enabled && !data.pagespeed?.skipped && (
           <div className="grid sm:grid-cols-2 gap-4 mt-4">
             <PSCard label="Mobile" payload={data.pagespeed?.mobile} />
             <PSCard label="Desktop" payload={data.pagespeed?.desktop} />
           </div>
         )}
+        {data.pagespeed?.skipped && (
+          <div className="text-sm text-slate-500 mt-2">PageSpeed skipped for faster scan.</div>
+        )}
       </Card>
 
-      {/* Rendered Diff */}
+      {/* Rendered Compare */}
       {data.rendered_diff && (
         <Card className="p-5">
           <h2 className="text-lg font-semibold mb-4">Rendered Compare</h2>
@@ -230,13 +226,11 @@ export function Results({ data }: { data: any }) {
             <div className="text-sm text-slate-500">Render skipped or failed.</div>
           ) : (
             <Accordion>
-              <AccordionItem title="Before / After Summary">
-                <pre className="mt-3">
-                  {JSON.stringify({ before: data.rendered_diff.before, after: data.rendered_diff.after }, null, 2)}
-                </pre>
+              <AccordionItem title="Matrix (table)">
+                <RenderMatrix matrix={data.rendered_diff.matrix || []} />
               </AccordionItem>
-              <AccordionItem title="Matrix">
-                <pre className="mt-3">{JSON.stringify(data.rendered_diff.matrix || [], null, 2)}</pre>
+              <AccordionItem title="Before / After Summary (table)">
+                <RenderBeforeAfter before={data.rendered_diff.before} after={data.rendered_diff.after} />
               </AccordionItem>
               <AccordionItem title="Rendered HTML Excerpt">
                 <button
@@ -251,9 +245,19 @@ export function Results({ data }: { data: any }) {
           )}
         </Card>
       )}
+
+      {/* Dedicated AMP Compare card too (in case user misses Overview link) */}
+      {data?.amp_compare && (
+        <Card id="amp-compare" className="p-5">
+          <h2 className="text-lg font-semibold mb-4">AMP vs Non-AMP (full table)</h2>
+          <AmpCompare cmp={data.amp_compare} />
+        </Card>
+      )}
     </div>
   );
 }
+
+/* ---------- Sub-components ---------- */
 
 function List({ urls = [] as string[] }) {
   return (
@@ -280,6 +284,16 @@ function PSCard({ label, payload }: { label: string; payload: any }) {
   const audits = payload?.metrics || {};
   const A = (k: string) => audits?.[k];
 
+  const row = (name: string, key: string) => {
+    const audit = A(key);
+    return (
+      <div className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-2 flex items-center justify-between">
+        <span className="text-slate-500 text-xs">{name}</span>
+        <Badge variant={metricVariant(key, audit) as any}>{String(metricValue(audit))}</Badge>
+      </div>
+    );
+  };
+
   return (
     <div className="rounded-2xl border border-slate-200/70 dark:border-slate-800 p-4">
       <div className="flex items-center justify-between">
@@ -287,22 +301,95 @@ function PSCard({ label, payload }: { label: string; payload: any }) {
         <Badge variant={v as any} className="text-sm">{score ?? "—"}</Badge>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <Metric label="FCP" value={metricValue(A("first-contentful-paint"))} />
-        <Metric label="Speed Index" value={metricValue(A("speed-index"))} />
-        <Metric label="LCP" value={metricValue(A("largest-contentful-paint"))} />
-        <Metric label="TBT" value={metricValue(A("total-blocking-time"))} />
-        <Metric label="CLS" value={metricValue(A("cumulative-layout-shift"))} />
-        <Metric label="Server RT" value={metricValue(A("server-response-time"))} />
+        {row("FCP", "first-contentful-paint")}
+        {row("Speed Index", "speed-index")}
+        {row("LCP", "largest-contentful-paint")}
+        {row("TBT", "total-blocking-time")}
+        {row("CLS", "cumulative-layout-shift")}
+        {row("Server RT", "server-response-time")}
       </div>
     </div>
   );
 }
 
-function Metric({ label, value }: { label: string; value: any }) {
+function RenderMatrix({ matrix = [] as any[] }) {
+  const headers = ["Field", "Before", "After", "Changed"];
+  const rows = matrix.map((r) => [r.label, String(r.before ?? "—"), String(r.after ?? "—"), r.changed ? "Yes" : "No"]);
+  return <Table headers={headers} rows={rows} />;
+}
+
+function RenderBeforeAfter({ before, after }: { before: any; after: any }) {
+  const keys = [
+    "title",
+    "description",
+    "canonical",
+    "robots_meta",
+    "h1_count",
+    "h1_first",
+    "has_open_graph",
+    "has_twitter_card",
+    "json_ld_count",
+    "microdata_count",
+    "rdfa_count",
+    "internal_links_count",
+    "external_links_count",
+    "viewport_present",
+  ];
+  const headers = ["Field", "Before", "After"];
+  const rows = keys.map((k) => [labelize(k), String(before?.[k] ?? "—"), String(after?.[k] ?? "—")]);
+  return <Table headers={headers} rows={rows} />;
+}
+
+function AmpCompare({ cmp }: { cmp: any }) {
+  const headers = ["Metric", "Non-AMP", "AMP", "Changed"];
+  const rows = (cmp?.rows || []).map((r: any) => [
+    r.label,
+    String(r.non_amp ?? "—"),
+    String(r.amp ?? "—"),
+    r.changed ? "Yes" : "No",
+  ]);
   return (
-    <div className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-2 flex items-center justify-between">
-      <span className="text-slate-500">{label}</span>
-      <span className="font-medium">{String(value ?? "—")}</span>
+    <div>
+      <div className="mb-2 text-sm text-slate-600 dark:text-slate-300">
+        Changes detected: <span className="font-medium">{cmp?.changes ?? 0}</span>
+      </div>
+      <Table headers={headers} rows={rows} />
+    </div>
+  );
+}
+
+function JsonLdValidation({ summary }: { summary: any }) {
+  const ok = summary?.summary?.ok_count ?? 0;
+  const total = summary?.summary?.total_items ?? 0;
+  const hasErrors = !!summary?.summary?.has_errors;
+
+  return (
+    <div className="space-y-2 text-sm">
+      <div className="flex items-center gap-2">
+        <Badge variant="success">OK: {ok}</Badge>
+        <Badge variant={hasErrors ? "warning" : "success"}>{hasErrors ? "Has Issues" : "All Good"}</Badge>
+      </div>
+      <div className="mt-2 space-y-2">
+        {(summary?.items || []).map((it: any, i: number) => (
+          <div
+            key={i}
+            className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-3 flex items-start justify-between gap-3"
+          >
+            <div>
+              <div className="font-medium">{it.type || "Unknown"}</div>
+              {it.missing?.length ? (
+                <div className="text-xs text-amber-700 dark:text-amber-200 mt-1">
+                  Missing: {it.missing.join(", ")}
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500">All required fields present</div>
+              )}
+            </div>
+            <Badge variant={it.ok ? "success" : "warning"}>{it.ok ? "OK" : "Fix"}</Badge>
+          </div>
+        ))}
+        {!total && <div className="text-xs text-slate-500">No JSON-LD items detected.</div>}
+      </div>
     </div>
   );
 }
