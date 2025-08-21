@@ -1,15 +1,13 @@
 // lib/format.ts
 import * as React from "react";
 
+/* ---------- tiny utils ---------- */
+
 export function cn(...a: Array<string | false | undefined | null>) {
   return a.filter(Boolean).join(" ");
 }
 
-/** Safe clipboard copy:
- * - Works in modern browsers via navigator.clipboard
- * - Falls back to a hidden textarea
- * - On server (no window/navigator) returns false without throwing
- */
+/** Safe clipboard copy for client-only; SSR returns false. */
 export async function copy(text: string) {
   try {
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
@@ -28,9 +26,7 @@ export async function copy(text: string) {
       document.body.removeChild(ta);
       return !!ok;
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
   return false;
 }
 
@@ -38,29 +34,156 @@ export function labelize(k: string) {
   return k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-// Overall PageSpeed score colors: <60 red, 60-79 yellow, 80-89 green, 90+ emerald
+/* ---------- color/variant helpers ---------- */
+
+function variant(color: "slate"|"sky"|"red"|"yellow"|"green"|"emerald"|"violet") {
+  const map: Record<string, string> = {
+    slate:   "bg-slate-50 text-slate-700 ring-1 ring-slate-200",
+    sky:     "bg-sky-50 text-sky-700 ring-1 ring-sky-200",
+    red:     "bg-red-50 text-red-700 ring-1 ring-red-200",
+    yellow:  "bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200",
+    green:   "bg-green-50 text-green-700 ring-1 ring-green-200",
+    emerald: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
+    violet:  "bg-violet-50 text-violet-700 ring-1 ring-violet-200",
+  };
+  return map[color];
+}
+
+/** Overall PageSpeed score bands */
 export function scoreBand(score?: number | null) {
   if (score == null) return "neutral" as const;
-  if (score < 60) return "bad" as const;
-  if (score < 80) return "warn" as const;
-  if (score < 90) return "good" as const;
-  return "great" as const;
+  if (score < 60) return "bad" as const;    // red
+  if (score < 80) return "warn" as const;   // yellow
+  if (score < 90) return "good" as const;   // green
+  return "great" as const;                   // emerald
 }
+
+/** Old callers may use scoreClass; keep for compatibility. */
 export function scoreClass(score?: number | null) {
   const band = scoreBand(score);
   switch (band) {
-    case "bad":
-      return "bg-red-50 text-red-700 ring-1 ring-red-200";
-    case "warn":
-      return "bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200";
-    case "good":
-      return "bg-green-50 text-green-700 ring-1 ring-green-200";
-    case "great":
-      return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
-    default:
-      return "bg-slate-50 text-slate-600 ring-1 ring-slate-200";
+    case "bad":   return variant("red");
+    case "warn":  return variant("yellow");
+    case "good":  return variant("green");
+    case "great": return variant("emerald");
+    default:      return variant("slate");
   }
 }
+
+/** What Results.tsx expects: return Tailwind classes by score. */
+export function scoreVariant(score?: number | null) {
+  return scoreClass(score);
+}
+
+/** Bool → classes (used for pass/fail chips). */
+export function boolVariant(v?: boolean | null) {
+  if (v === true)  return variant("green");
+  if (v === false) return variant("red");
+  return variant("slate");
+}
+
+/** HTTP status → classes */
+export function statusVariantFromCode(code?: number | null) {
+  if (!code) return variant("slate");
+  if (code >= 200 && code < 300) return variant("green");
+  if (code >= 300 && code < 400) return variant("sky");
+  if (code >= 400 && code < 500) return variant("yellow");
+  if (code >= 500)               return variant("red");
+  return variant("slate");
+}
+
+/* ---------- Lighthouse metric helpers ---------- */
+/** Thresholds based on Lighthouse recommendations */
+const METRIC_THRESHOLDS: Record<string, {good:number; ni:number; unit:"ms"|"s"|"unitless"}> = {
+  // Core Web Vitals / common audits
+  "first-contentful-paint":     { good: 1800, ni: 3000, unit: "ms" },
+  "largest-contentful-paint":   { good: 2500, ni: 4000, unit: "ms" },
+  "speed-index":                { good: 3400, ni: 5800, unit: "ms" },
+  "total-blocking-time":        { good: 200,  ni: 600,  unit: "ms" },
+  "cumulative-layout-shift":    { good: 0.1,  ni: 0.25, unit: "unitless" },
+  "server-response-time":       { good: 600,  ni: 1200, unit: "ms" },
+};
+
+function toNumber(x: any): number | null {
+  if (x == null) return null;
+  if (typeof x === "number") return x;
+  if (typeof x === "string") {
+    const n = Number(x);
+    return isNaN(n) ? null : n;
+  }
+  if (typeof x === "object") {
+    if (typeof x.numericValue === "number") return x.numericValue;
+    if (typeof x.score === "number" && typeof x.numericUnit === "string") {
+      // sometimes PSI gives score + numericUnit
+      return null; // prefer numericValue; fall through to displayValue
+    }
+    if (typeof x.displayValue === "string") {
+      const m = x.displayValue.match(/([\d.]+)/);
+      return m ? Number(m[1]) : null;
+    }
+  }
+  return null;
+}
+
+/** Color classes for a specific Lighthouse metric by id */
+export function metricVariant(metricId: string, value: any): string {
+  const id = metricId.toLowerCase();
+  const t = METRIC_THRESHOLDS[id];
+  if (!t) return variant("slate");
+
+  const num = toNumber(value);
+  if (num == null) return variant("slate");
+
+  // normalize CLS already in unitless; others in ms
+  const v = num;
+
+  if (id === "cumulative-layout-shift") {
+    if (v <= t.good) return variant("green");
+    if (v <= t.ni)   return variant("yellow");
+    return variant("red");
+  } else {
+    if (v <= t.good) return variant("green");
+    if (v <= t.ni)   return variant("yellow");
+    return variant("red");
+  }
+}
+
+/** Human-readable value for a Lighthouse metric */
+export function metricValue(metricId: string, value: any): string {
+  const id = metricId.toLowerCase();
+  const t = METRIC_THRESHOLDS[id];
+  if (!t) {
+    // try to show displayValue if given by PSI
+    if (value && typeof value.displayValue === "string") return value.displayValue;
+    const n = toNumber(value);
+    return n == null ? "—" : String(n);
+  }
+
+  const n = toNumber(value);
+  if (n == null) {
+    if (value && typeof value.displayValue === "string") return value.displayValue;
+    return "—";
+  }
+
+  if (id === "cumulative-layout-shift") {
+    // show up to 2 decimals, trim trailing zeros
+    const s = (Math.round(n * 100) / 100).toFixed(2);
+    return s.replace(/\.?0+$/, "");
+  }
+
+  // ms → s if large
+  if (t.unit === "ms") {
+    if (n >= 1000) {
+      const s = Math.round((n / 1000) * 100) / 100;
+      return `${s.toFixed(2).replace(/\.?0+$/, "")} s`;
+    }
+    return `${Math.round(n)} ms`;
+  }
+
+  return String(n);
+}
+
+/* ---------- Non-JSX DataTable component ---------- */
 
 export type TableProps = {
   headers: Array<React.ReactNode>;
@@ -69,7 +192,6 @@ export type TableProps = {
   className?: string;
 };
 
-/** Generic data table without JSX (safe in .ts files) */
 export function DataTable(
   { headers, rows, dense = false, className = "" }: TableProps
 ): React.ReactElement {
@@ -85,8 +207,7 @@ export function DataTable(
           {
             key: i,
             scope: "col",
-            className:
-              "text-left font-semibold text-slate-600 dark:text-slate-300 px-3 py-2",
+            className: "text-left font-semibold text-slate-600 dark:text-slate-300 px-3 py-2",
           },
           h
         )
@@ -123,10 +244,7 @@ export function DataTable(
               ...r.map((cell, ci) =>
                 React.createElement(
                   "td",
-                  {
-                    key: ci,
-                    className: cn("align-top px-3", dense ? "py-1" : "py-2"),
-                  },
+                  { key: ci, className: cn("align-top px-3", dense ? "py-1" : "py-2") },
                   cell as React.ReactNode
                 )
               )
@@ -136,10 +254,7 @@ export function DataTable(
 
   return React.createElement(
     "table",
-    {
-      role: "table",
-      className: `w-full text-sm border-separate border-spacing-y-2 ${className}`,
-    },
+    { role: "table", className: `w-full text-sm border-separate border-spacing-y-2 ${className}` },
     thead,
     tbody
   );
@@ -148,5 +263,5 @@ export function DataTable(
 // Back-compat alias if other files import { Table }
 export const Table = DataTable;
 
-// Default export (optional convenience)
+// Default export (optional)
 export default DataTable;
