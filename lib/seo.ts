@@ -1,9 +1,7 @@
 import * as cheerio from "cheerio";
 import type { Cheerio, Element } from "cheerio";
 
-import { URL } from "url";
-
-
+/** Network types */
 export type FetchResult = {
   load_ms: number;
   body: string;
@@ -14,24 +12,37 @@ export type FetchResult = {
   http_version?: string | null;
 };
 
-export const UA = process.env.SEO_UA || "Mozilla/5.0 (compatible; SEO-Analyzer-Next/1.0; +https://example.local)";
+export const UA =
+  process.env.SEO_UA ||
+  "Mozilla/5.0 (compatible; SEO-Analyzer-Next/1.0; +https://example.local)";
+
 const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 20000);
 
+/** Fetch raw HTML with a timeout and basic headers */
 export async function fetchRaw(target: string): Promise<FetchResult> {
   const t0 = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+
   const res = await fetch(target, {
     headers: {
       "User-Agent": UA,
-      "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-IN,en;q=0.9"
+      Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+      "Accept-Language": "en-IN,en;q=0.9",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
     },
     redirect: "follow",
-    cache: "no-store"
-  } as RequestInit);
+    cache: "no-store",
+    signal: controller.signal,
+  } as RequestInit).finally(() => clearTimeout(timer));
+
   const body = await res.text();
   const load_ms = Date.now() - t0;
+
   const headers: Record<string, string> = {};
-  res.headers.forEach((v, k) => headers[k.toLowerCase()] = v);
+  res.headers.forEach((v, k) => (headers[k.toLowerCase()] = v));
+
   return {
     load_ms,
     body,
@@ -39,22 +50,33 @@ export async function fetchRaw(target: string): Promise<FetchResult> {
     status: res.status,
     final_url: res.url || target,
     redirects: 0,
-    http_version: null
+    http_version: null,
   };
 }
 
+/** Text helper with proper Cheerio typing */
 function text($el: Cheerio<Element>): string {
   return ($el.text() || "").trim().replace(/\s+/g, " ");
 }
 
+/** JSON parsing that tolerates trailing commas a bit */
 function safeJson(s: string) {
-  try { return JSON.parse(s); } catch {
-    try { return JSON.parse(s.replace(/,(\s*[}\]])/g, "$1")); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch {
+    try {
+      return JSON.parse(s.replace(/,(\s*[}\]])/g, "$1"));
+    } catch {
+      return null;
+    }
   }
 }
 
+/** Extract JSON-LD, Microdata, RDFa */
 export function extractStructured(html: string, baseUrl: string) {
   const $ = cheerio.load(html);
+
+  // JSON-LD
   const json_ld: any[] = [];
   $('script[type*="ld+json"]').each((_, el) => {
     const raw = $(el).text() || "";
@@ -63,27 +85,42 @@ export function extractStructured(html: string, baseUrl: string) {
     if (Array.isArray(data)) json_ld.push(...data);
     else json_ld.push(data);
   });
+
+  // Microdata
   const microdata: any[] = [];
-  $('[itemscope]').each((_, el) => {
-    const itemtype = $(el).attr("itemtype");
+  $("[itemscope]").each((_, el) => {
+    const itemtype = (el as any).attribs?.["itemtype"];
     const props: any[] = [];
-    $(el).find("[itemprop]").each((__, p) => {
-      const prop = $(p).attr("itemprop") || "";
-      const value = $(p).attr("content") || text($(p));
-      props.push({ prop, value });
-    });
+    $(el)
+      .find("[itemprop]")
+      .each((__, p) => {
+        const prop = (p as any).attribs?.["itemprop"] || "";
+        const value =
+          (p as any).attribs?.["content"] || text($(p) as Cheerio<Element>);
+        props.push({ prop, value });
+      });
     microdata.push({ itemtype, properties: props });
   });
+
+  // RDFa
   const rdfa: any[] = [];
-  $('[typeof]').each((_, el) => {
-    const tf = $(el).attr("typeof") || "";
-    const about = $(el).attr("about") || $(el).attr("resource") || "";
-    const props = $(el).find("[property]").map((__, p) => $(p).attr("property")).get();
+  $("[typeof]").each((_, el) => {
+    const tf = (el as any).attribs?.["typeof"] || "";
+    const about =
+      (el as any).attribs?.["about"] ||
+      (el as any).attribs?.["resource"] ||
+      "";
+    const props = $(el)
+      .find("[property]")
+      .map((__, p) => (p as any).attribs?.["property"])
+      .get();
     rdfa.push({ typeof: tf, about, props });
   });
+
   return { json_ld, microdata, rdfa };
 }
 
+/** Helpers for JSON-LD validation */
 function localname(t?: string | null) {
   if (!t) return null;
   let s = t;
@@ -99,7 +136,7 @@ function jsonldItems(jsonld: any[]) {
     if (Array.isArray(node)) node.forEach(push);
     else if (node && typeof node === "object") items.push(node);
   }
-  (jsonld || []).forEach(block => {
+  (jsonld || []).forEach((block) => {
     if (block && typeof block === "object" && block["@graph"]) push(block["@graph"]);
     else push(block);
   });
@@ -108,12 +145,12 @@ function jsonldItems(jsonld: any[]) {
 
 function requiredFor(typ: string) {
   const t = typ.toLowerCase();
-  if (["article","newsarticle","blogposting"].includes(t)) return ["headline"];
-  if (["organization","localbusiness"].includes(t)) return ["name"];
+  if (["article", "newsarticle", "blogposting"].includes(t)) return ["headline"];
+  if (["organization", "localbusiness"].includes(t)) return ["name"];
   if (["product"].includes(t)) return ["name"];
   if (["breadcrumblist"].includes(t)) return ["itemListElement"];
   if (["faqpage"].includes(t)) return ["mainEntity"];
-  if (["event"].includes(t)) return ["name","startDate"];
+  if (["event"].includes(t)) return ["name", "startDate"];
   return [];
 }
 
@@ -121,52 +158,122 @@ export function validateJSONLD(jsonld: any[]) {
   const items = jsonldItems(jsonld);
   const report = items.map((it: any) => {
     const typ = it["@type"];
-    const typVal = Array.isArray(typ) ? (typ[0] || "Unknown") : (typ || "Unknown");
+    const typVal = Array.isArray(typ) ? typ[0] || "Unknown" : typ || "Unknown";
     const req = requiredFor(String(typVal));
-    const missing = req.filter((f) => !(f in it) || (typeof it[f] === "string" && !it[f].trim()));
+    const missing = req.filter(
+      (f) => !(f in it) || (typeof it[f] === "string" && !it[f].trim())
+    );
     return { type: typVal, missing, ok: req.length ? missing.length === 0 : true };
   });
   const summary = {
     total_items: items.length,
     ok_count: report.filter((r: any) => r.ok).length,
-    has_errors: report.some((r: any) => !r.ok)
+    has_errors: report.some((r: any) => !r.ok),
   };
   return { summary, items: report };
 }
 
-export function parseHTML(url: string, body: string, headers: Record<string,string>, load_ms: number) {
-  const $ = cheerio.load(body);
-  const head = $("head").length ? $("head") : $.root();
-  const title = head.find("title").text() || null;
-  let desc: string | null = null;
-  let robots: string | null = null;
-  head.find("meta").each((_, el) => {
-    const name = (el.attribs["name"] || el.attribs["property"] || "").toLowerCase();
-    if (name === "description" || name === "og:description") {
-      desc = desc || el.attribs["content"];
-    }
-    if (name === "robots") {
-      robots = el.attribs["content"];
+/** Summarize all structured data types encountered */
+export function summarizeTypes(jsonld: any[], microdata: any[], rdfa: any[]) {
+  const types = new Set<string>();
+  jsonldItems(jsonld).forEach((it: any) => {
+    const t = it["@type"];
+    if (Array.isArray(t))
+      t.forEach((x) => {
+        const ln = localname(String(x));
+        if (ln) types.add(ln);
+      });
+    else if (typeof t === "string") {
+      const ln = localname(t);
+      if (ln) types.add(ln);
     }
   });
+  (microdata || []).forEach((md: any) => {
+    const it = md.itemtype;
+    if (Array.isArray(it))
+      it.forEach((x: string) => {
+        const ln = localname(x);
+        if (ln) types.add(ln);
+      });
+    else if (typeof it === "string") {
+      const ln = localname(it);
+      if (ln) types.add(ln);
+    }
+  });
+  (rdfa || []).forEach((rd: any) => {
+    const tf = rd.typeof;
+    if (typeof tf === "string")
+      tf.split(/\s+/).forEach((tok) => {
+        const ln = localname(tok);
+        if (ln) types.add(ln);
+      });
+  });
+  const has_newsarticle = Array.from(types).some(
+    (t) => t.toLowerCase() === "newsarticle"
+  );
+  return { types: Array.from(types).sort(), has_newsarticle };
+}
+
+/** Parse the static HTML and compute SEO checks */
+export function parseHTML(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  load_ms: number
+) {
+  const $ = cheerio.load(body);
+
+  // --- Meta basics (no head variable to avoid Document/Element typing issues)
+  const title = $("head > title").text() || null;
+
+  let desc: string | null = null;
+  let robots: string | null = null;
+  $("head meta").each((_, el) => {
+    const name =
+      ((el as any).attribs?.["name"] || (el as any).attribs?.["property"] || "").toLowerCase();
+    if (name === "description" || name === "og:description") {
+      desc = desc || (el as any).attribs?.["content"];
+    }
+    if (name === "robots") {
+      robots = (el as any).attribs?.["content"];
+    }
+  });
+
+  // Canonical
   let canon: string | null = null;
-  const linkCanon = head.find('link[rel*="canonical"]').attr("href");
-  if (linkCanon) { try { canon = new URL(linkCanon, url).toString(); } catch {} }
+  const linkCanon = $('head link[rel*="canonical"]').attr("href");
+  if (linkCanon) {
+    try {
+      canon = new URL(linkCanon, url).toString();
+    } catch {}
+  }
 
-  const ampLink = head.find('link[rel*="amphtml"]').attr("href");
+  // AMP
+  const ampLink = $('head link[rel*="amphtml"]').attr("href");
   const amp_url = ampLink ? new URL(ampLink, url).toString() : null;
-  const is_amp = Boolean(ampLink) || body.slice(0,5000).toLowerCase().includes("amp-boilerplate");
+  const is_amp =
+    Boolean(ampLink) || body.slice(0, 5000).toLowerCase().includes("amp-boilerplate");
 
-  const h1 = $("h1").map((_, h) => text($(h))).get();
-  const h2 = $("h2").map((_, h) => text($(h))).get();
+  // Headings
+  const h1 = $("h1")
+    .map((_, h) => text($(h) as Cheerio<Element>))
+    .get();
+  const h2 = $("h2")
+    .map((_, h) => text($(h) as Cheerio<Element>))
+    .get();
 
+  // Links
   const parsed = new URL(url);
   const baseHost = parsed.host.toLowerCase();
-  const aHrefs = $("a").map((_, a) => (a.attribs["href"] || "")).get();
+  const aHrefs = $("a")
+    .map((_, a) => ((a as any).attribs?.["href"] || "") as string)
+    .get();
+
   const internal_links: string[] = [];
   const external_links: string[] = [];
   const nofollow_links: string[] = [];
-  aHrefs.forEach(href => {
+
+  aHrefs.forEach((href) => {
     if (!href) return;
     try {
       const abs = new URL(href, url).toString();
@@ -175,106 +282,184 @@ export function parseHTML(url: string, body: string, headers: Record<string,stri
       else external_links.push(abs);
     } catch {}
   });
-  $("a[rel]").each((_, a) => {
-    const rel = (a.attribs["rel"] || "").toLowerCase();
-    if (rel.includes("nofollow")) {
-      const href = a.attribs["href"] || "";
-      try { nofollow_links.push(new URL(href, url).toString());} catch {}
-    }
+
+  $('a[rel*="nofollow"]').each((_, a) => {
+    const href = (a as any).attribs?.["href"] || "";
+    if (!href) return;
+    try {
+      nofollow_links.push(new URL(href, url).toString());
+    } catch {}
   });
 
+  // Structured data
   const sd = extractStructured(body, url);
   const jsonld = sd.json_ld || [];
   const microdata = sd.microdata || [];
   const rdfa = sd.rdfa || [];
   const json_ld_validation = validateJSONLD(jsonld);
+  const sd_types = summarizeTypes(jsonld, microdata, rdfa);
 
-  const hreflang = head.find('link[rel*="alternate"][hreflang]').map((_, ln) => {
-    const href = ln.attribs["href"];
-    const h = (ln.attribs["hreflang"] || "").trim().toLowerCase();
-    if (!href || !h) return null;
-    try { return { hreflang: h, href: new URL(href, url).toString() }; } catch { return null; }
-  }).get().filter(Boolean);
+  // hreflang
+  const hreflang = $('head link[rel*="alternate"][hreflang]')
+    .map((_, ln) => {
+      const href = (ln as any).attribs?.["href"];
+      const h = ((ln as any).attribs?.["hreflang"] || "").trim().toLowerCase();
+      if (!href || !h) return null;
+      try {
+        return { hreflang: h, href: new URL(href, url).toString() };
+      } catch {
+        return null;
+      }
+    })
+    .get()
+    .filter(Boolean);
 
+  // --- Checks
   const checks: any = {};
   const title_len = (title || "").length;
   const desc_len = (desc || "").trim().length;
+
   checks.title_length = { chars: title_len, ok: title_len >= 30 && title_len <= 65 };
   checks.meta_description_length = { chars: desc_len, ok: desc_len >= 70 && desc_len <= 160 };
   checks.h1_count = { count: h1.length, ok: h1.length === 1 };
-  const viewport = head.find('meta[name="viewport"]').length > 0;
-  checks.viewport_meta = { present: viewport, ok: viewport, value: viewport ? "present" : "missing" };
+
+  const viewport = $('head meta[name="viewport"]').length > 0;
+  checks.viewport_meta = {
+    present: viewport,
+    ok: viewport,
+    value: viewport ? "present" : "missing",
+  };
+
   checks.canonical = {
     present: !!canon,
     absolute: !!(canon && canon.startsWith("http")),
     self_ref: canon === url,
     ok: !!(canon && canon.startsWith("http")),
-    value: canon || ""
+    value: canon || "",
   };
+
   const imgs = $("img").get();
-  const with_alt = imgs.filter((im:any) => (im.attribs["alt"] || "").trim().length > 0).length;
+  const with_alt = imgs.filter(
+    (im: any) => ((im as any).attribs?.["alt"] || "").trim().length > 0
+  ).length;
   checks.alt_coverage = {
     with_alt,
     total_imgs: imgs.length,
-    percent: imgs.length ? Math.round((with_alt / imgs.length) * 1000)/10 : 100.0,
-    ok: imgs.length ? (with_alt / imgs.length) >= 0.8 : true
+    percent: imgs.length ? Math.round((with_alt / imgs.length) * 1000) / 10 : 100.0,
+    ok: imgs.length ? with_alt / imgs.length >= 0.8 : true,
   };
+
+  // Lang & charset
   const htmlTag = $("html").get(0) as any;
   const langVal = htmlTag?.attribs?.["lang"];
   checks.lang = { value: langVal, present: !!langVal, ok: !!langVal };
+
   let charset: string | null = null;
-  const mc = head.find("meta[charset]").attr("charset");
+  const mc = $("head meta[charset]").attr("charset");
   if (mc) charset = mc;
   else {
-    const ct = head.find('meta[http-equiv="Content-Type"]').attr("content");
+    const ct = $('head meta[http-equiv="Content-Type"]').attr("content");
     if (ct) {
-      const part = ct.split(";").map(x=>x.trim().toLowerCase()).find(x=>x.startsWith("charset="));
-      if (part) charset = part.split("=",1)[1];
+      const part = ct
+        .split(";")
+        .map((x) => x.trim().toLowerCase())
+        .find((x) => x.startsWith("charset="));
+      if (part) charset = part.split("=", 1)[1];
     }
   }
   checks.charset = { value: charset, present: !!charset, ok: !!charset };
-  const enc = (headers["content-encoding"] || "").toLowerCase();
-  const compression_value = enc.includes("gzip") ? "gzip" : (enc.includes("br") ? "br" : "none");
-  checks.compression = { gzip: enc.includes("gzip"), brotli: enc.includes("br"), value: compression_value, ok: ["gzip","br"].includes(compression_value) };
 
-  const og_required = ["og:title","og:description","og:image"];
-  const og_present = Object.fromEntries(og_required.map(p => [p, head.find(`meta[property="${p}"]`).length>0]));
-  const tw_required = ["twitter:card","twitter:title","twitter:description","twitter:image"];
-  const tw_present = Object.fromEntries(tw_required.map(n => [n, head.find(`meta[name="${n}"]`).length>0]));
+  // Compression
+  const enc = (headers["content-encoding"] || "").toLowerCase();
+  const compression_value = enc.includes("gzip")
+    ? "gzip"
+    : enc.includes("br")
+    ? "br"
+    : "none";
+  checks.compression = {
+    gzip: enc.includes("gzip"),
+    brotli: enc.includes("br"),
+    value: compression_value,
+    ok: ["gzip", "br"].includes(compression_value),
+  };
+
+  // Social cards completeness
+  const og_required = ["og:title", "og:description", "og:image"];
+  const og_present = Object.fromEntries(
+    og_required.map((p) => [p, $(`head meta[property="${p}"]`).length > 0])
+  );
+  const tw_required = [
+    "twitter:card",
+    "twitter:title",
+    "twitter:description",
+    "twitter:image",
+  ];
+  const tw_present = Object.fromEntries(
+    tw_required.map((n) => [n, $(`head meta[name="${n}"]`).length > 0])
+  );
   checks.social_cards = {
     og_complete: Object.values(og_present).every(Boolean),
     twitter_complete: Object.values(tw_present).every(Boolean),
-    ok: Object.values(og_present).every(Boolean) && Object.values(tw_present).every(Boolean),
-    value: `OG:${Object.values(og_present).every(Boolean)?'ok':'miss'} / TW:${Object.values(tw_present).every(Boolean)?'ok':'miss'}`
+    ok:
+      Object.values(og_present).every(Boolean) &&
+      Object.values(tw_present).every(Boolean),
+    value: `OG:${Object.values(og_present).every(Boolean) ? "ok" : "miss"} / TW:${
+      Object.values(tw_present).every(Boolean) ? "ok" : "miss"
+    }`,
   };
 
+  // Robots meta / X-Robots
   const xr_raw = headers["x-robots-tag"];
-  const meta_flags = parseRobotsMeta(robots);
-  const header_flags = parseXRobots(xr_raw);
+  const meta_flags = parseRobotsMeta(robots || undefined);
+  const header_flags = parseXRobots(xr_raw || undefined);
   const noindex_flag = meta_flags.noindex || header_flags.noindex;
   const nofollow_flag = meta_flags.nofollow || header_flags.nofollow;
-  checks.robots_meta_index = { value: meta_flags.noindex ? "noindex" : "index", ok: !meta_flags.noindex };
-  checks.robots_meta_follow = { value: meta_flags.nofollow ? "nofollow" : "follow", ok: !meta_flags.nofollow };
-  checks.x_robots_tag = { value: xr_raw || "", ok: !(header_flags.noindex || header_flags.nofollow) };
-  checks.indexable = { value: (!noindex_flag && !nofollow_flag) ? "index,follow" : (noindex_flag && nofollow_flag) ? "noindex,nofollow" : (noindex_flag ? "noindex" : "nofollow"), ok: !noindex_flag };
 
-  const sd_types = summarizeTypes(jsonld, microdata, rdfa);
+  checks.robots_meta_index = {
+    value: meta_flags.noindex ? "noindex" : "index",
+    ok: !meta_flags.noindex,
+  };
+  checks.robots_meta_follow = {
+    value: meta_flags.nofollow ? "nofollow" : "follow",
+    ok: !meta_flags.nofollow,
+  };
+  checks.x_robots_tag = {
+    value: xr_raw || "",
+    ok: !(header_flags.noindex || header_flags.nofollow),
+  };
+  checks.indexable = {
+    value:
+      !noindex_flag && !nofollow_flag
+        ? "index,follow"
+        : noindex_flag && nofollow_flag
+        ? "noindex,nofollow"
+        : noindex_flag
+        ? "noindex"
+        : "nofollow",
+    ok: !noindex_flag,
+  };
+
+  const robots_url =
+    parsed.protocol && parsed.host ? `${parsed.protocol}//${parsed.host}/robots.txt` : null;
 
   return {
     url,
     status_code: Number(headers["status"] || 0),
     load_time_ms: load_ms,
-    content_length: Number(headers["content-length"] || Buffer.byteLength(body, "utf8")),
+    content_length: Number(
+      headers["content-length"] || Buffer.byteLength(body, "utf8")
+    ),
     title,
     description: desc,
     canonical: canon,
     robots_meta: robots,
     is_amp,
     amp_url,
-    h1, h2,
-    internal_links: internal_links.slice(0,200),
-    external_links: external_links.slice(0,200),
-    nofollow_links: nofollow_links.slice(0,200),
+    h1,
+    h2,
+    internal_links: internal_links.slice(0, 200),
+    external_links: external_links.slice(0, 200),
+    nofollow_links: nofollow_links.slice(0, 200),
     json_ld: jsonld,
     json_ld_validation,
     microdata,
@@ -284,16 +469,21 @@ export function parseHTML(url: string, body: string, headers: Record<string,stri
     sd_types,
     has_open_graph: Object.values(og_present).some(Boolean),
     has_twitter_card: Object.values(tw_present).some(Boolean),
-    robots_url: (parsed.protocol && parsed.host) ? `${parsed.protocol}//${parsed.host}/robots.txt` : null,
+    robots_url,
     checks,
-    hreflang
+    hreflang,
   };
 }
 
+/** Robots helpers */
 export function parseRobotsMeta(val?: string | null) {
   const d = { noindex: false, nofollow: false };
   if (!val) return d;
-  const toks = (val || "").toLowerCase().split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+  const toks = (val || "")
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   d.noindex = toks.includes("noindex");
   d.nofollow = toks.includes("nofollow");
   return d;
@@ -307,64 +497,61 @@ export function parseXRobots(val?: string | null) {
   return d;
 }
 
-export function summarizeTypes(jsonld: any[], microdata: any[], rdfa: any[]) {
-  const types = new Set<string>();
-  jsonldItems(jsonld).forEach((it:any) => {
-    const t = it["@type"];
-    if (Array.isArray(t)) t.forEach(x => { const ln = localname(String(x)); if (ln) types.add(ln); });
-    else if (typeof t === "string") { const ln = localname(t); if (ln) types.add(ln); }
-  });
-  (microdata || []).forEach((md:any)=>{
-    const it = md.itemtype;
-    if (Array.isArray(it)) it.forEach((x:string)=>{ const ln = localname(x); if (ln) types.add(ln); });
-    else if (typeof it === "string") { const ln = localname(it); if (ln) types.add(ln); }
-  });
-  (rdfa || []).forEach((rd:any)=>{
-    const tf = rd.typeof;
-    if (typeof tf === "string") tf.split(/\s+/).forEach(tok=>{ const ln = localname(tok); if (ln) types.add(ln); });
-  });
-  const has_newsarticle = Array.from(types).some(t=>t.toLowerCase()==="newsarticle");
-  return { types: Array.from(types).sort(), has_newsarticle };
-}
-
+/** Sample link HEAD/GET checks */
 export async function linkAudit(data: any) {
-  const internal: string[] = (data.internal_links || []).slice(0,25);
-  const external: string[] = (data.external_links || []).slice(0,10);
+  const internal: string[] = (data.internal_links || []).slice(0, 25);
+  const external: string[] = (data.external_links || []).slice(0, 10);
+
   async function check(u: string) {
     const item: any = { url: u };
     try {
-      const r = await fetch(u, { method: "HEAD", redirect: "follow", cache: "no-store" } as RequestInit);
-      if ([405,501].includes(r.status)) {
-        const r2 = await fetch(u, { method: "GET", redirect: "follow", cache: "no-store" } as RequestInit);
+      const r = await fetch(u, {
+        method: "HEAD",
+        redirect: "follow",
+        cache: "no-store",
+      } as RequestInit);
+      if ([405, 501].includes(r.status)) {
+        const r2 = await fetch(u, {
+          method: "GET",
+          redirect: "follow",
+          cache: "no-store",
+        } as RequestInit);
         item.status = r2.status;
-        item.final_url = r2.url;
+        item.final_url = (r2 as any).url;
       } else {
         item.status = r.status;
-        item.final_url = r.url;
+        item.final_url = (r as any).url;
       }
-    } catch (e:any) {
+    } catch (e: any) {
       item.error = String(e?.message || e);
     }
     return item;
   }
+
   const res_int = await Promise.all(internal.map(check));
   const res_ext = await Promise.all(external.map(check));
   return { internal: res_int, external: res_ext };
 }
 
+/** Fetch robots.txt, list sitemaps, quick reachability check */
 export async function robotsAudit(data: any) {
   const robots_url = data.robots_url;
   const out: any = { robots_txt: null, sitemaps: [], blocked_by_robots: null };
   if (!robots_url) return out;
+
   try {
     const r = await fetch(robots_url, { cache: "no-store" } as RequestInit);
     const txt = r.ok ? await r.text() : "";
     out.robots_txt = { url: robots_url, status: r.status, length: txt.length };
+
     if (txt) {
-      const lines = txt.split(/\r?\n/);
-      const smaps = lines.filter(l => /^sitemap:/i.test(l.trim())).map(l => l.split(":")[1]).map(x=>x?.trim()).filter(Boolean) as string[];
+      const sitemaps: string[] = [];
+      for (const line of txt.split(/\r?\n/)) {
+        const m = line.match(/^sitemap:\s*(.+)$/i);
+        if (m && m[1]) sitemaps.push(m[1].trim());
+      }
       const seen = new Set<string>();
-      for (const sm of smaps) {
+      for (const sm of sitemaps) {
         if (seen.has(sm)) continue;
         seen.add(sm);
         if (sm.toLowerCase().endsWith("sitemap_index.xml")) {
@@ -372,14 +559,18 @@ export async function robotsAudit(data: any) {
           continue;
         }
         try {
-          const h = await fetch(sm, { method: "HEAD", redirect: "follow", cache: "no-store" } as RequestInit);
+          const h = await fetch(sm, {
+            method: "HEAD",
+            redirect: "follow",
+            cache: "no-store",
+          } as RequestInit);
           out.sitemaps.push({ url: sm, status: h.status });
-        } catch (e:any) {
+        } catch (e: any) {
           out.sitemaps.push({ url: sm, error: String(e?.message || e) });
         }
       }
     }
-  } catch (e:any) {
+  } catch (e: any) {
     out.robots_txt = { url: robots_url, error: String(e?.message || e) };
   }
   return out;
