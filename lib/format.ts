@@ -125,48 +125,62 @@ function toNumber(x: any): number | null {
   return null;
 }
 
-/** Color classes for a specific Lighthouse metric by id */
-export function metricVariant(metricId: string, value: any): string {
-  const id = metricId.toLowerCase();
+/* Resolve (id, value) whether the caller passes (audit) or (metricId, value) */
+function resolveMetricArgs(a: any, b?: any): { id: string; value: any } {
+  if (b === undefined) {
+    const audit = a;
+    const id = typeof audit?.id === "string" ? audit.id.toLowerCase() : "";
+    return { id, value: audit };
+  }
+  return { id: String(a).toLowerCase(), value: b };
+}
+
+/** Color classes for a specific Lighthouse metric — supports (audit) or (metricId, value) */
+// overloads
+export function metricVariant(audit: any): string;
+export function metricVariant(metricId: string, value: any): string;
+export function metricVariant(a: any, b?: any): string {
+  const { id, value } = resolveMetricArgs(a, b);
   const t = METRIC_THRESHOLDS[id];
   if (!t) return variant("slate");
 
   const num = toNumber(value);
   if (num == null) return variant("slate");
 
-  // normalize CLS already in unitless; others in ms
-  const v = num;
-
+  // CLS unitless; others typically ms
   if (id === "cumulative-layout-shift") {
-    if (v <= t.good) return variant("green");
-    if (v <= t.ni)   return variant("yellow");
+    if (num <= t.good) return variant("green");
+    if (num <= t.ni)   return variant("yellow");
     return variant("red");
   } else {
-    if (v <= t.good) return variant("green");
-    if (v <= t.ni)   return variant("yellow");
+    if (num <= t.good) return variant("green");
+    if (num <= t.ni)   return variant("yellow");
     return variant("red");
   }
 }
 
-/** Human-readable value for a Lighthouse metric */
-export function metricValue(metricId: string, value: any): string {
-  const id = metricId.toLowerCase();
+/** Human-readable value for a Lighthouse metric — supports (audit) or (metricId, value) */
+// overloads
+export function metricValue(audit: any): string;
+export function metricValue(metricId: string, value: any): string;
+export function metricValue(a: any, b?: any): string {
+  const { id, value } = resolveMetricArgs(a, b);
   const t = METRIC_THRESHOLDS[id];
+  const n = toNumber(value);
+
+  // No thresholds known → show displayValue or number
   if (!t) {
-    // try to show displayValue if given by PSI
     if (value && typeof value.displayValue === "string") return value.displayValue;
-    const n = toNumber(value);
     return n == null ? "—" : String(n);
   }
 
-  const n = toNumber(value);
   if (n == null) {
     if (value && typeof value.displayValue === "string") return value.displayValue;
     return "—";
   }
 
   if (id === "cumulative-layout-shift") {
-    // show up to 2 decimals, trim trailing zeros
+    // 2 decimals, trim trailing zeros
     const s = (Math.round(n * 100) / 100).toFixed(2);
     return s.replace(/\.?0+$/, "");
   }
