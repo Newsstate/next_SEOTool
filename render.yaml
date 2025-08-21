@@ -11,3 +11,5 @@ services:
         value: Mozilla/5.0 (compatible; SEO-Analyzer-Next/1.0; +https://example.local)
       - key: HTTP_TIMEOUT_MS
         value: "20000"
+      - key: NEXT_TELEMETRY_DISABLED
+        value: "1"
