@@ -2,9 +2,8 @@
 import { NextResponse } from "next/server";
 import * as SEO from "@/lib/seo";
 
-// ensure Node runtime (Playwright etc.)
+// Ensure Node runtime (for Playwright, etc.)
 export const runtime = "nodejs";
-// this route should always be dynamic
 export const dynamic = "force-dynamic";
 
 type AnalyzeBody = {
@@ -14,33 +13,59 @@ type AnalyzeBody = {
   do_amp_compare?: boolean;    // default true
 };
 
-function getAnalyzer() {
-  // be tolerant to different export styles
-  return (
-    (SEO as any).analyzeUrl ||
-    (SEO as any).analyze ||
-    (SEO as any).default
-  );
+type AnalyzeFn = (url: string, opts?: any) => Promise<any>;
+
+function getAnalyzer(): AnalyzeFn {
+  const mod: any = SEO as any;
+  const fn =
+    mod.analyze ||
+    mod.analyzeUrl ||
+    mod.scan ||
+    mod.scanUrl ||
+    mod.default;
+  if (typeof fn !== "function") {
+    throw new Error("Analyzer function not found in lib/seo");
+  }
+  return fn as AnalyzeFn;
 }
 
 /** Keep only primitive/safe fields for compare tables to avoid cycles */
-function summarize(d: any) {
-  if (!d || typeof d !== "object") return null;
+type Summary = {
+  url: string | null;
+  status_code: number | null;
+  load_time_ms: number | null;
+  content_length: number | null;
+  title: string | null;
+  description: string | null;
+  canonical: string | null;
+  h1_count: number | null;
+  h1_first: string | null;
+  has_open_graph: boolean;
+  has_twitter_card: boolean;
+  json_ld_count: number | null;
+  internal_links_count: number | null;
+  external_links_count: number | null;
+  viewport_present: boolean;
+  is_amp: boolean;
+  amp_url: string | null;
+};
+
+function summarize(d: any): Summary {
   return {
-    url: d.url ?? null,
-    status_code: d.status_code ?? null,
-    load_time_ms: d.load_time_ms ?? null,
-    content_length: d.content_length ?? null,
-    title: d.title ?? null,
-    description: d.description ?? null,
-    canonical: d.canonical ?? null,
-    h1_count: Array.isArray(d.h1) ? d.h1.length : null,
-    h1_first: Array.isArray(d.h1) && d.h1.length ? d.h1[0] : null,
+    url: d?.url ?? null,
+    status_code: d?.status_code ?? null,
+    load_time_ms: d?.load_time_ms ?? null,
+    content_length: d?.content_length ?? null,
+    title: d?.title ?? null,
+    description: d?.description ?? null,
+    canonical: d?.canonical ?? null,
+    h1_count: Array.isArray(d?.h1) ? d.h1.length : null,
+    h1_first: Array.isArray(d?.h1) && d.h1.length ? d.h1[0] : null,
     has_open_graph: !!d?.has_open_graph,
     has_twitter_card: !!d?.has_twitter_card,
-    json_ld_count: Array.isArray(d.json_ld) ? d.json_ld.length : null,
-    internal_links_count: Array.isArray(d.internal_links) ? d.internal_links.length : null,
-    external_links_count: Array.isArray(d.external_links) ? d.external_links.length : null,
+    json_ld_count: Array.isArray(d?.json_ld) ? d.json_ld.length : null,
+    internal_links_count: Array.isArray(d?.internal_links) ? d.internal_links.length : null,
+    external_links_count: Array.isArray(d?.external_links) ? d.external_links.length : null,
     viewport_present: !!d?.checks?.viewport_meta?.present,
     is_amp: !!d?.is_amp,
     amp_url: d?.amp_url ?? null,
@@ -50,11 +75,11 @@ function summarize(d: any) {
 function buildAmpCompare(nonamp: any, amp: any) {
   const a = summarize(nonamp);
   const b = summarize(amp);
-  const row = (label: string, key: keyof typeof a) => ({
+  const row = (label: string, key: keyof Summary) => ({
     label,
-    non_amp: a?.[key] ?? null,
-    amp: b?.[key] ?? null,
-    changed: (a?.[key] ?? null) !== (b?.[key] ?? null),
+    non_amp: a[key],
+    amp: b[key],
+    changed: a[key] !== b[key],
   });
   return {
     non_amp: a,
@@ -83,10 +108,10 @@ function buildAmpCompare(nonamp: any, amp: any) {
 function decycle<T>(obj: T): T {
   const seen = new WeakSet();
   return JSON.parse(
-    JSON.stringify(obj, (_k, v) => {
+    JSON.stringify(obj as any, (_k, v) => {
       if (typeof v === "object" && v !== null) {
-        if (seen.has(v)) return "[Circular]";
-        seen.add(v);
+        if (seen.has(v as object)) return "[Circular]";
+        seen.add(v as object);
       }
       return v;
     })
@@ -105,14 +130,15 @@ export async function POST(req: Request) {
   const doPagespeed = body.do_pagespeed !== false;     // default true
   const doAmpCompare = body.do_amp_compare !== false;  // default true
 
-  const analyze = getAnalyzer();
-  if (typeof analyze !== "function") {
-    return NextResponse.json({ error: "Analyzer not found in lib/seo" }, { status: 500 });
+  let analyze: AnalyzeFn;
+  try {
+    analyze = getAnalyzer();
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message || String(e) }, { status: 500 });
   }
 
-  // 1) Base scan
-  //   Pass options if your analyzer supports them; extra options are ignored safely.
-  const base = await analyze(url, { doRendered, doPagespeed });
+  // 1) Base scan (extra options are ignored if analyzer doesn't use them)
+  const base = await analyze(url, { doRendered: doRendered, doPagespeed: doPagespeed });
 
   // 2) Optionally compute AMP compare WITHOUT embedding full objects
   const result: any = { ...base };
@@ -126,13 +152,13 @@ export async function POST(req: Request) {
         let ampData: any = null;
 
         if (isAmp) {
-          // If the scanned page is AMP, compare against canonical if present
+          // current page is AMP; compare against canonical if exists
           if (base?.canonical) {
             nonampData = await analyze(base.canonical, { doRendered: false, doPagespeed: false });
           }
           ampData = base;
         } else if (ampUrl) {
-          // If the scanned page is non-AMP, fetch AMP variant
+          // current page is non-AMP; compare against found amp_url
           ampData = await analyze(ampUrl, { doRendered: false, doPagespeed: false });
         }
 
@@ -145,6 +171,6 @@ export async function POST(req: Request) {
     }
   }
 
-  // 3) Always return a decycled copy
+  // 3) Return a decycled copy to avoid circular structure crashes
   return NextResponse.json(decycle(result));
 }
