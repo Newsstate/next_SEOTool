@@ -2,7 +2,6 @@
 import { NextResponse } from "next/server";
 import * as SEO from "@/lib/seo";
 
-// Ensure Node runtime (for Playwright, etc.)
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -15,6 +14,7 @@ type AnalyzeBody = {
 
 type AnalyzeFn = (url: string, opts?: any) => Promise<any>;
 
+/** Find whichever export your lib/seo provides */
 function getAnalyzer(): AnalyzeFn {
   const mod: any = SEO as any;
   const fn =
@@ -29,7 +29,21 @@ function getAnalyzer(): AnalyzeFn {
   return fn as AnalyzeFn;
 }
 
-/** Keep only primitive/safe fields for compare tables to avoid cycles */
+/** Replace circular refs with "[Circular]" and return a deep JSON clone */
+function decycle<T>(obj: T): T {
+  const seen = new WeakSet<object>();
+  return JSON.parse(
+    JSON.stringify(obj as any, (_k, v) => {
+      if (v && typeof v === "object") {
+        if (seen.has(v)) return "[Circular]";
+        seen.add(v);
+      }
+      return v;
+    })
+  );
+}
+
+/** Minimal, safe snapshot used in compare tables (no nested objects) */
 type Summary = {
   url: string | null;
   status_code: number | null;
@@ -104,20 +118,6 @@ function buildAmpCompare(nonamp: any, amp: any) {
   };
 }
 
-/** Replace circular refs with "[Circular]" to guarantee JSON.stringify safety */
-function decycle<T>(obj: T): T {
-  const seen = new WeakSet();
-  return JSON.parse(
-    JSON.stringify(obj as any, (_k, v) => {
-      if (typeof v === "object" && v !== null) {
-        if (seen.has(v as object)) return "[Circular]";
-        seen.add(v as object);
-      }
-      return v;
-    })
-  );
-}
-
 export async function POST(req: Request) {
   const body = (await req.json()) as AnalyzeBody;
 
@@ -137,29 +137,40 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 });
   }
 
-  // 1) Base scan (extra options are ignored if analyzer doesn't use them)
-  const base = await analyze(url, { doRendered: doRendered, doPagespeed: doPagespeed });
+  // 1) Base scan
+  const baseRaw = await analyze(url, { doRendered: doRendered, doPagespeed: doPagespeed });
 
-  // 2) Optionally compute AMP compare WITHOUT embedding full objects
-  const result: any = { ...base };
+  // 2) Immediately decycle & strip any cyclic fields the lib may have added
+  let baseSafe: any = decycle(baseRaw);
+  if (baseSafe && typeof baseSafe === "object" && "amp_compare" in baseSafe) {
+    // Analyzer may have inserted a heavy/cyclic amp_compare; drop it
+    try { delete baseSafe.amp_compare; } catch {}
+  }
+
+  // Start the result from the safe clone
+  const result: any = { ...baseSafe };
+
+  // 3) Build AMP compare only from summaries (no object graphs)
   if (doAmpCompare) {
     try {
-      const ampUrl = base?.amp_url || null;
-      const isAmp = !!base?.is_amp;
+      const ampUrl = baseSafe?.amp_url || null;
+      const isAmp = !!baseSafe?.is_amp;
 
       if (ampUrl || isAmp) {
-        let nonampData = base;
+        let nonampData = baseRaw; // use original for best fidelity in summarize()
         let ampData: any = null;
 
         if (isAmp) {
           // current page is AMP; compare against canonical if exists
-          if (base?.canonical) {
-            nonampData = await analyze(base.canonical, { doRendered: false, doPagespeed: false });
+          if (baseSafe?.canonical) {
+            const canonicalRaw = await analyze(baseSafe.canonical, { doRendered: false, doPagespeed: false });
+            nonampData = canonicalRaw;
           }
-          ampData = base;
+          ampData = baseRaw;
         } else if (ampUrl) {
-          // current page is non-AMP; compare against found amp_url
-          ampData = await analyze(ampUrl, { doRendered: false, doPagespeed: false });
+          // current page is non-AMP; fetch AMP variant
+          const ampRaw = await analyze(ampUrl, { doRendered: false, doPagespeed: false });
+          ampData = ampRaw;
         }
 
         if (ampData) {
@@ -171,6 +182,6 @@ export async function POST(req: Request) {
     }
   }
 
-  // 3) Return a decycled copy to avoid circular structure crashes
+  // 4) Final safety: return a decycled copy
   return NextResponse.json(decycle(result));
 }
