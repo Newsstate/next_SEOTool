@@ -2,7 +2,7 @@
 import { Card } from "@/components/ui/Card";
 import { Accordion, AccordionItem } from "@/components/ui/Accordion";
 import { Badge } from "@/components/ui/Badge";
-import { copy } from "@/lib/format";
+import { copy, labelize, scoreVariant, fmtMs, fmtSec, statusVariantFromCode, boolVariant, metricValue } from "@/lib/format";
 
 export function Results({ data }: { data: any }) {
   const basic = [
@@ -25,8 +25,8 @@ export function Results({ data }: { data: any }) {
         <div className="flex items-center justify-between gap-3">
           <h2 className="text-lg font-semibold">Overview</h2>
           <div className="flex gap-2">
-            {data.has_open_graph && <Badge>OpenGraph</Badge>}
-            {data.has_twitter_card && <Badge>Twitter</Badge>}
+            {data.has_open_graph && <Badge variant="blue">OpenGraph</Badge>}
+            {data.has_twitter_card && <Badge variant="purple">Twitter</Badge>}
             {data.sd_types?.has_newsarticle && <Badge variant="blue">NewsArticle</Badge>}
           </div>
         </div>
@@ -40,7 +40,7 @@ export function Results({ data }: { data: any }) {
         </div>
       </Card>
 
-      {/* Checks */}
+      {/* Checks (colored) */}
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-4">SEO Checks</h2>
         <div className="grid grid-cols-2 gap-3 text-sm">
@@ -48,17 +48,32 @@ export function Results({ data }: { data: any }) {
             <div key={k} className="rounded-xl border border-slate-200/60 dark:border-slate-800 p-3">
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium">{labelize(k)}</span>
-                <span
-                  className={`px-2 py-0.5 rounded text-xs ${
-                    v.ok ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-200" : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                  }`}
-                >
-                  {v.ok ? "OK" : "Check"}
-                </span>
+                <Badge variant={boolVariant(v?.ok) as any}>{v?.ok ? "OK" : "Check"}</Badge>
               </div>
-              {"value" in v && <div className="mt-1 text-slate-600 dark:text-slate-300">{String(v.value)}</div>}
+
+              {"value" in v && v.value && (
+                <div className="mt-1 text-slate-600 dark:text-slate-300">{String(v.value)}</div>
+              )}
+
               {"chars" in v && (
-                <div className="mt-1 text-xs text-slate-500">chars: {v.chars}</div>
+                <div className="mt-1 text-xs text-slate-500">length: {v.chars}</div>
+              )}
+
+              {/* Special case: alt coverage progress bar */}
+              {k === "alt_coverage" && typeof v?.percent === "number" && (
+                <div className="mt-2">
+                  <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+                    <div
+                      className={`h-full ${
+                        v.percent < 60 ? "bg-rose-500" : v.percent < 80 ? "bg-amber-500" : "bg-green-500"
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(0, v.percent))}%` }}
+                    />
+                  </div>
+                  <div className="text-xs mt-1 text-slate-500">
+                    {v.with_alt}/{v.total_imgs} images have alt ({v.percent}%)
+                  </div>
+                </div>
               )}
             </div>
           ))}
@@ -68,6 +83,7 @@ export function Results({ data }: { data: any }) {
       {/* Structured Data */}
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-4">Structured Data</h2>
+
         <div className="mb-3 text-sm">
           <div className="flex flex-wrap gap-2">
             {(data.sd_types?.types || []).map((t: string) => (
@@ -75,26 +91,49 @@ export function Results({ data }: { data: any }) {
             ))}
           </div>
         </div>
+
         <Accordion>
-          <AccordionItem title={`JSON-LD (${(data.json_ld || []).length})`}>
-            <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-              {JSON.stringify(data.json_ld || [], null, 2)}
-            </pre>
+          {/* JSON-LD Validation summary rendered nicely */}
+          <AccordionItem title={`JSON-LD Validation (items: ${data?.json_ld_validation?.summary?.total_items ?? 0})`}>
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Badge variant="success">OK: {data?.json_ld_validation?.summary?.ok_count ?? 0}</Badge>
+                <Badge variant={(data?.json_ld_validation?.summary?.has_errors ? "warning" : "success") as any}>
+                  {data?.json_ld_validation?.summary?.has_errors ? "Has Issues" : "All Good"}
+                </Badge>
+              </div>
+              <div className="mt-2 space-y-2">
+                {(data?.json_ld_validation?.items || []).map((it: any, i: number) => (
+                  <div
+                    key={i}
+                    className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-3 flex items-start justify-between gap-3"
+                  >
+                    <div>
+                      <div className="font-medium">{it.type || "Unknown"}</div>
+                      {it.missing?.length ? (
+                        <div className="text-xs text-amber-700 dark:text-amber-200 mt-1">
+                          Missing: {it.missing.join(", ")}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-slate-500">All required fields present</div>
+                      )}
+                    </div>
+                    <Badge variant={it.ok ? "success" : "warning"}>{it.ok ? "OK" : "Fix"}</Badge>
+                  </div>
+                ))}
+              </div>
+            </div>
           </AccordionItem>
-          <AccordionItem title={`JSON-LD Validation`}>
-            <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-              {JSON.stringify(data.json_ld_validation || {}, null, 2)}
-            </pre>
+
+          {/* Raw JSON blocks still available under collapsible sections */}
+          <AccordionItem title={`JSON-LD (${(data.json_ld || []).length}) • raw`}>
+            <pre className="mt-3">{JSON.stringify(data.json_ld || [], null, 2)}</pre>
           </AccordionItem>
-          <AccordionItem title={`Microdata (${data.microdata_summary?.count || 0})`}>
-            <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-              {JSON.stringify(data.microdata || [], null, 2)}
-            </pre>
+          <AccordionItem title={`Microdata (${data.microdata_summary?.count || 0}) • raw`}>
+            <pre className="mt-3">{JSON.stringify(data.microdata || [], null, 2)}</pre>
           </AccordionItem>
-          <AccordionItem title={`RDFa (${data.rdfa_summary?.count || 0})`}>
-            <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-              {JSON.stringify(data.rdfa || [], null, 2)}
-            </pre>
+          <AccordionItem title={`RDFa (${data.rdfa_summary?.count || 0}) • raw`}>
+            <pre className="mt-3">{JSON.stringify(data.rdfa || [], null, 2)}</pre>
           </AccordionItem>
         </Accordion>
       </Card>
@@ -102,6 +141,57 @@ export function Results({ data }: { data: any }) {
       {/* Links & Crawlability */}
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-4">Links & Crawlability</h2>
+
+        {/* Robots & Sitemaps (pretty) */}
+        <div className="rounded-xl border border-slate-200/60 dark:border-slate-800 p-3 mb-4 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">robots.txt:</span>
+            {(() => {
+              const s = data?.crawl_checks?.robots_txt?.status as number | undefined;
+              const u = data?.crawl_checks?.robots_txt?.url as string | undefined;
+              return (
+                <>
+                  <Badge variant={statusVariantFromCode(s) as any}>{s ?? "—"}</Badge>
+                  {u && (
+                    <a href={u} target="_blank" rel="noreferrer" className="text-sky-600 underline">
+                      {u}
+                    </a>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+          <div className="mt-2">
+            <span className="font-medium">Blocked by robots:</span>{" "}
+            <Badge variant={data?.crawl_checks?.blocked_by_robots ? "warning" : "success"}>
+              {data?.crawl_checks?.blocked_by_robots ? "Possibly" : "Allowed"}
+            </Badge>
+          </div>
+          <div className="mt-3">
+            <div className="font-medium mb-1">Sitemaps</div>
+            <div className="grid gap-2">
+              {(data?.crawl_checks?.sitemaps || []).map((sm: any, i: number) => (
+                <div key={i} className="flex items-center gap-2">
+                  {typeof sm.status === "number" ? (
+                    <Badge variant={statusVariantFromCode(sm.status) as any}>{sm.status}</Badge>
+                  ) : (
+                    <Badge variant="neutral">info</Badge>
+                  )}
+                  <a href={sm.url} target="_blank" rel="noreferrer" className="underline break-all">
+                    {sm.url}
+                  </a>
+                  {sm.note && <span className="text-xs text-slate-500">({sm.note})</span>}
+                  {sm.error && <span className="text-xs text-rose-600 dark:text-rose-300">({sm.error})</span>}
+                </div>
+              ))}
+              {!data?.crawl_checks?.sitemaps?.length && (
+                <div className="text-xs text-slate-500">No sitemaps found in robots.txt</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Link buckets */}
         <Accordion>
           <AccordionItem title={`Internal Links (${(data.internal_links || []).length})`}>
             <List urls={data.internal_links} />
@@ -112,15 +202,10 @@ export function Results({ data }: { data: any }) {
           <AccordionItem title={`Nofollow Links (${(data.nofollow_links || []).length})`}>
             <List urls={data.nofollow_links} />
           </AccordionItem>
-          <AccordionItem title="Robots & Sitemaps">
-            <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-              {JSON.stringify(data.crawl_checks || {}, null, 2)}
-            </pre>
-          </AccordionItem>
         </Accordion>
       </Card>
 
-      {/* Performance */}
+      {/* Performance + PageSpeed */}
       <Card className="p-5">
         <h2 className="text-lg font-semibold mb-2">Performance</h2>
         <div className="text-sm text-slate-600 dark:text-slate-300">
@@ -128,19 +213,12 @@ export function Results({ data }: { data: any }) {
           <div>HTTP: <span className="font-medium">{data?.performance?.http_version || "—"}</span></div>
           <div>Redirects: <span className="font-medium">{data?.performance?.redirects ?? 0}</span></div>
         </div>
+
         {data.pagespeed?.enabled && (
-          <Accordion className="mt-4">
-            <AccordionItem title="PageSpeed (mobile)">
-              <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-                {JSON.stringify(data.pagespeed?.mobile || {}, null, 2)}
-              </pre>
-            </AccordionItem>
-            <AccordionItem title="PageSpeed (desktop)">
-              <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-                {JSON.stringify(data.pagespeed?.desktop || {}, null, 2)}
-              </pre>
-            </AccordionItem>
-          </Accordion>
+          <div className="grid sm:grid-cols-2 gap-4 mt-4">
+            <PSCard label="Mobile" payload={data.pagespeed?.mobile} />
+            <PSCard label="Desktop" payload={data.pagespeed?.desktop} />
+          </div>
         )}
       </Card>
 
@@ -152,15 +230,13 @@ export function Results({ data }: { data: any }) {
             <div className="text-sm text-slate-500">Render skipped or failed.</div>
           ) : (
             <Accordion>
-              <AccordionItem title="Matrix">
-                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-                  {JSON.stringify(data.rendered_diff.matrix || [], null, 2)}
-                </pre>
-              </AccordionItem>
               <AccordionItem title="Before / After Summary">
-                <pre className="mt-3 max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
+                <pre className="mt-3">
                   {JSON.stringify({ before: data.rendered_diff.before, after: data.rendered_diff.after }, null, 2)}
                 </pre>
+              </AccordionItem>
+              <AccordionItem title="Matrix">
+                <pre className="mt-3">{JSON.stringify(data.rendered_diff.matrix || [], null, 2)}</pre>
               </AccordionItem>
               <AccordionItem title="Rendered HTML Excerpt">
                 <button
@@ -169,9 +245,7 @@ export function Results({ data }: { data: any }) {
                 >
                   Copy excerpt
                 </button>
-                <pre className="max-h-72 overflow-auto rounded-lg bg-slate-950/90 text-slate-100 p-3 text-xs">
-                  {data.rendered_diff.render_excerpt || ""}
-                </pre>
+                <pre className="max-h-72 overflow-auto">{data.rendered_diff.render_excerpt || ""}</pre>
               </AccordionItem>
             </Accordion>
           )}
@@ -200,8 +274,35 @@ function List({ urls = [] as string[] }) {
   );
 }
 
-function labelize(k: string) {
-  return k
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (m) => m.toUpperCase());
+function PSCard({ label, payload }: { label: string; payload: any }) {
+  const score: number | undefined = payload?.score;
+  const v = scoreVariant(score);
+  const audits = payload?.metrics || {};
+  const A = (k: string) => audits?.[k];
+
+  return (
+    <div className="rounded-2xl border border-slate-200/70 dark:border-slate-800 p-4">
+      <div className="flex items-center justify-between">
+        <div className="font-semibold">{label}</div>
+        <Badge variant={v as any} className="text-sm">{score ?? "—"}</Badge>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <Metric label="FCP" value={metricValue(A("first-contentful-paint"))} />
+        <Metric label="Speed Index" value={metricValue(A("speed-index"))} />
+        <Metric label="LCP" value={metricValue(A("largest-contentful-paint"))} />
+        <Metric label="TBT" value={metricValue(A("total-blocking-time"))} />
+        <Metric label="CLS" value={metricValue(A("cumulative-layout-shift"))} />
+        <Metric label="Server RT" value={metricValue(A("server-response-time"))} />
+      </div>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-2 flex items-center justify-between">
+      <span className="text-slate-500">{label}</span>
+      <span className="font-medium">{String(value ?? "—")}</span>
+    </div>
+  );
 }
