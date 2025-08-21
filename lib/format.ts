@@ -1,125 +1,152 @@
 // lib/format.ts
+import * as React from "react";
+
 export function cn(...a: Array<string | false | undefined | null>) {
   return a.filter(Boolean).join(" ");
 }
 
+/** Safe clipboard copy:
+ * - Works in modern browsers via navigator.clipboard
+ * - Falls back to a hidden textarea
+ * - On server (no window/navigator) returns false without throwing
+ */
 export async function copy(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+    if (typeof document !== "undefined") {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand ? document.execCommand("copy") : false;
+      document.body.removeChild(ta);
+      return !!ok;
+    }
   } catch {
-    return false;
+    // ignore
   }
+  return false;
 }
 
 export function labelize(k: string) {
   return k.replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-// Overall PageSpeed score colors: <60 red, 60-79 yellow, 80+ green
-export function scoreVariant(score?: number) {
-  if (score == null) return "neutral";
-  if (score < 60) return "danger";
-  if (score < 80) return "warning";
-  return "success";
+// Overall PageSpeed score colors: <60 red, 60-79 yellow, 80-89 green, 90+ emerald
+export function scoreBand(score?: number | null) {
+  if (score == null) return "neutral" as const;
+  if (score < 60) return "bad" as const;
+  if (score < 80) return "warn" as const;
+  if (score < 90) return "good" as const;
+  return "great" as const;
 }
-
-export function statusVariantFromCode(code?: number) {
-  if (!code) return "neutral";
-  if (code >= 200 && code < 300) return "success";
-  if (code >= 300 && code < 400) return "blue";
-  if (code >= 400 && code < 500) return "warning";
-  return "danger";
-}
-
-export function boolVariant(ok: boolean | undefined) {
-  if (ok === true) return "success";
-  if (ok === false) return "warning";
-  return "neutral";
-}
-
-export function metricValue(m: any) {
-  if (!m) return "—";
-  if (typeof m.displayValue === "string") return m.displayValue;
-  if (typeof m.numericValue === "number") return m.numericValue;
-  return "—";
-}
-
-/** Lighthouse metric thresholds */
-export function metricVariant(metricKey: string, audit: any) {
-  const nv = typeof audit?.numericValue === "number" ? audit.numericValue : undefined;
-  if (nv == null) return "neutral";
-
-  // numericValue is in ms for most, unitless for CLS
-  const ms = nv;
-  switch (metricKey) {
-    case "first-contentful-paint": // FCP
-      // good ≤1.8s, NI 1.8–3s, poor >3s
-      if (ms <= 1800) return "success";
-      if (ms <= 3000) return "warning";
-      return "danger";
-    case "largest-contentful-paint": // LCP
-      // good ≤2.5s, NI 2.5–4s, poor >4s
-      if (ms <= 2500) return "success";
-      if (ms <= 4000) return "warning";
-      return "danger";
-    case "cumulative-layout-shift": // CLS (unitless stored in numericValue)
-      {
-        const cls = nv; // already unitless
-        if (cls <= 0.1) return "success";
-        if (cls <= 0.25) return "warning";
-        return "danger";
-      }
-    case "speed-index": // SI
-      // good ≤3.4s, NI 3.4–5.8s, poor >5.8s
-      if (ms <= 3400) return "success";
-      if (ms <= 5800) return "warning";
-      return "danger";
-    case "total-blocking-time": // TBT
-      // good ≤200ms, NI 200–600ms, poor >600ms
-      if (ms <= 200) return "success";
-      if (ms <= 600) return "warning";
-      return "danger";
-    case "server-response-time":
-      // no strict standard; rough: ≤100ms good, ≤300ms NI, else poor
-      if (ms <= 100) return "success";
-      if (ms <= 300) return "warning";
-      return "danger";
+export function scoreClass(score?: number | null) {
+  const band = scoreBand(score);
+  switch (band) {
+    case "bad":
+      return "bg-red-50 text-red-700 ring-1 ring-red-200";
+    case "warn":
+      return "bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200";
+    case "good":
+      return "bg-green-50 text-green-700 ring-1 ring-green-200";
+    case "great":
+      return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
     default:
-      return "neutral";
+      return "bg-slate-50 text-slate-600 ring-1 ring-slate-200";
   }
 }
 
-/** Simple table helpers */
-export function Table({
-  headers,
-  rows,
-}: {
-  headers: string[];
-  rows: Array<Array<string | number | boolean | null | undefined>>;
-}) {
-  return (
-    <table className="w-full text-sm border-separate border-spacing-y-2">
-      <thead>
-        <tr>
-          {headers.map((h) => (
-            <th key={h} className="text-left font-semibold text-slate-600 dark:text-slate-300 pb-1">
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r, i) => (
-          <tr key={i} className="bg-white/70 dark:bg-white/5 rounded-xl overflow-hidden">
-            {r.map((c, j) => (
-              <td key={j} className="p-2 align-top border border-slate-200/60 dark:border-slate-800 rounded-lg">
-                {String(c ?? "—")}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+export type TableProps = {
+  headers: Array<React.ReactNode>;
+  rows: Array<Array<React.ReactNode>>;
+  dense?: boolean;
+  className?: string;
+};
+
+/** Generic data table without JSX (safe in .ts files) */
+export function DataTable(
+  { headers, rows, dense = false, className = "" }: TableProps
+): React.ReactElement {
+  const thead = React.createElement(
+    "thead",
+    null,
+    React.createElement(
+      "tr",
+      null,
+      ...headers.map((h, i) =>
+        React.createElement(
+          "th",
+          {
+            key: i,
+            scope: "col",
+            className:
+              "text-left font-semibold text-slate-600 dark:text-slate-300 px-3 py-2",
+          },
+          h
+        )
+      )
+    )
+  );
+
+  const tbody =
+    rows.length === 0
+      ? React.createElement(
+          "tbody",
+          null,
+          React.createElement(
+            "tr",
+            null,
+            React.createElement(
+              "td",
+              { colSpan: headers.length, className: "px-3 py-4 text-slate-500" },
+              "No data."
+            )
+          )
+        )
+      : React.createElement(
+          "tbody",
+          null,
+          ...rows.map((r, ri) =>
+            React.createElement(
+              "tr",
+              {
+                key: ri,
+                className:
+                  "bg-white dark:bg-slate-900 rounded-xl shadow-sm ring-1 ring-slate-200/60 dark:ring-white/10",
+              },
+              ...r.map((cell, ci) =>
+                React.createElement(
+                  "td",
+                  {
+                    key: ci,
+                    className: cn("align-top px-3", dense ? "py-1" : "py-2"),
+                  },
+                  cell as React.ReactNode
+                )
+              )
+            )
+          )
+        );
+
+  return React.createElement(
+    "table",
+    {
+      role: "table",
+      className: `w-full text-sm border-separate border-spacing-y-2 ${className}`,
+    },
+    thead,
+    tbody
   );
 }
+
+// Back-compat alias if other files import { Table }
+export const Table = DataTable;
+
+// Default export (optional convenience)
+export default DataTable;
