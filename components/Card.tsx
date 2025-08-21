@@ -1,8 +1,7 @@
-// components/Card.tsx
 import * as React from "react";
 import { cn } from "@/lib/format";
 
-export type CardProps = React.HTMLAttributes<HTMLDivElement>;
+export type CardProps = React.ComponentProps<"div">;
 
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
   ({ className, ...props }, ref) => (
@@ -12,7 +11,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
         "rounded-2xl bg-white dark:bg-slate-900 ring-1 ring-slate-200/60 dark:ring-white/10 shadow-sm",
         className
       )}
-      {...props}
+      {...props}  // <-- id, onClick, style, etc. now allowed
     />
   )
 );
