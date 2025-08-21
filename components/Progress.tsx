@@ -15,12 +15,14 @@ const labels: Record<StageKey, string> = {
 export function ProgressBar({
   stages,
   showRendered,
+  showPageSpeed,
 }: {
   stages: Partial<Record<StageKey, "idle" | "start" | "done" | "error" | "skipped">>;
   showRendered: boolean;
+  showPageSpeed: boolean;
 }) {
-  const order: StageKey[] = ["fetch", "parse", "links", "robots", "pagespeed", "rendered"];
-  const active = showRendered ? order : order.filter((k) => k !== "rendered");
+  const baseOrder: StageKey[] = ["fetch", "parse", "links", "robots", "pagespeed", "rendered"];
+  const active = baseOrder.filter((k) => (k === "rendered" ? showRendered : k === "pagespeed" ? showPageSpeed : true));
 
   const completed = active.filter((k) => stages[k] === "done").length;
   const total = active.length;
