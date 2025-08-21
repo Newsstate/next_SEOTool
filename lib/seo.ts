@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { URL } from "url";
+import type { Cheerio, Element } from "cheerio";
 
 export type FetchResult = {
   load_ms: number;
@@ -40,8 +41,8 @@ export async function fetchRaw(target: string): Promise<FetchResult> {
   };
 }
 
-function text($el: cheerio.Cheerio): string {
-  return ($el.text() || "").trim().replace(/\s+/g, " ");
+function text($el: any): string {
+  return ($el.text?.() || "").trim().replace(/\s+/g, " ");
 }
 
 function safeJson(s: string) {
