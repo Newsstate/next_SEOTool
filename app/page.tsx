@@ -2,12 +2,12 @@
 
 // app/page.tsx
 import { useState } from "react";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Results } from "@/components/results";
-import { Loader } from "@/components/loader";
+import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Switch } from "@/components/ui/Switch";
+import { Results } from "@/components/Results";
+import { Loader } from "@/components/Loader";
 
 export default function Page() {
   const [url, setUrl] = useState("");
