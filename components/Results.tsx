@@ -1,395 +1,507 @@
+// components/Results.tsx
 "use client";
-import { Card } from "@/components/ui/Card";
-import { Accordion, AccordionItem } from "@/components/ui/Accordion";
-import { Badge } from "@/components/ui/Badge";
+
+import * as React from "react";
+import { Card } from "@/components/card"; // or "@/components/ui/card" if you prefer
 import {
+  cn,
   copy,
   labelize,
   scoreVariant,
   statusVariantFromCode,
   boolVariant,
-  metricValue,
   metricVariant,
-  Table,
+  metricValue,
+  DataTable,
 } from "@/lib/format";
 
-export function Results({ data }: { data: any }) {
-  const basic = [
-    ["URL", data.url],
-    ["Final URL", data?.performance?.final_url || data.url],
-    ["Status", data.status_code],
-    ["Load (ms)", data.load_time_ms],
-    ["Page size (bytes)", data.content_length],
-    ["Title", data.title],
-    ["Meta description", data.description],
-    ["Canonical", data.canonical],
-    ["AMP", data.is_amp ? "Yes" : "No"],
-    ["AMP URL", data.amp_url],
+type Analysis = any;
+
+function Section({
+  id,
+  title,
+  defaultOpen = true,
+  children,
+}: {
+  id?: string;
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card id={id} className="p-0 overflow-hidden">
+      <details open={defaultOpen}>
+        <summary className="cursor-pointer list-none m-0 px-4 py-3 text-sm font-semibold bg-slate-50/80 dark:bg-slate-900/40 border-b border-slate-200/60 dark:border-white/10 flex items-center justify-between">
+          <span>{title}</span>
+          <span className="text-slate-400 text-xs">Toggle</span>
+        </summary>
+        <div className="p-4">{children}</div>
+      </details>
+    </Card>
+  );
+}
+
+function Chip({ className = "", children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className={cn("inline-flex items-center rounded-md px-2 py-1 text-xs font-medium", className)}>
+      {children}
+    </span>
+  );
+}
+
+function KeyVal({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <div className="flex items-start justify-between gap-4 py-1">
+      <div className="text-xs text-slate-500">{k}</div>
+      <div className="text-sm text-slate-800 dark:text-slate-200 max-w-[70%] break-words">{v ?? <em className="text-slate-400">—</em>}</div>
+    </div>
+  );
+}
+
+function Copyable({ text }: { text?: string | null }) {
+  if (!text) return <em className="text-slate-400">—</em>;
+  return (
+    <button
+      onClick={() => copy(text)}
+      className="text-left hover:underline decoration-dotted underline-offset-2"
+      title="Copy"
+    >
+      {text}
+    </button>
+  );
+}
+
+/* ------------------------- Rendered Compare ------------------------- */
+
+function RenderedCompare({ diff }: { diff?: any }) {
+  if (!diff || !diff.rendered) {
+    return <div className="text-sm text-slate-500">Render skipped or failed.</div>;
+  }
+
+  const headers = ["Label", "Before", "After", "Changed"];
+  const rows = (diff.matrix || []).map((r: any, i: number) => [
+    <span key={`l${i}`} className="font-medium">{r.label}</span>,
+    String(r.before ?? "—"),
+    String(r.after ?? "—"),
+    r.changed ? <Chip className="bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200">Yes</Chip>
+              : <Chip className="bg-green-50 text-green-700 ring-1 ring-green-200">No</Chip>,
+  ]);
+
+  const beforeSummary = [
+    ["Title", diff.before?.title ?? "—"],
+    ["Description", diff.before?.description ?? "—"],
+    ["Canonical", diff.before?.canonical ?? "—"],
+    ["H1 Count", String(diff.before?.h1_count ?? "—")],
   ];
 
-  const ampChanges = data?.amp_compare?.changes ?? 0;
+  const afterSummary = [
+    ["Title", diff.after?.title ?? "—"],
+    ["Description", diff.after?.description ?? "—"],
+    ["Canonical", diff.after?.canonical ?? "—"],
+    ["H1 Count", String(diff.after?.h1_count ?? "—")],
+  ];
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
+    <div className="space-y-4">
+      <div>
+        <h4 className="text-sm font-semibold mb-2">Matrix</h4>
+        <DataTable headers={headers} rows={rows} />
+      </div>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div>
+          <h4 className="text-sm font-semibold mb-2">Before</h4>
+          <DataTable
+            headers={["Field", "Value"]}
+            rows={beforeSummary.map(([k, v]) => [k, v])}
+            dense
+          />
+        </div>
+        <div>
+          <h4 className="text-sm font-semibold mb-2">After</h4>
+          <DataTable
+            headers={["Field", "Value"]}
+            rows={afterSummary.map(([k, v]) => [k, v])}
+            dense
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------- PageSpeed UI --------------------------- */
+
+function PageSpeedBlock({ ps }: { ps?: any }) {
+  if (!ps || ps.enabled === false) {
+    return <div className="text-sm text-slate-500">PageSpeed not run.</div>;
+  }
+
+  const renderOne = (label: string, obj?: any) => {
+    if (!obj) return null;
+    const score = obj.score as number | null | undefined;
+    const audits = obj.metrics || {};
+    const kv = (name: string, key: string) => {
+      const v = audits?.[key];
+      return (
+        <div key={key} className="flex items-center justify-between border rounded-md px-2 py-1">
+          <span className="text-xs text-slate-500">{name}</span>
+          <Chip className={metricVariant(key, v) ?? ""}>{metricValue(key, v)}</Chip>
+        </div>
+      );
+    };
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold">{label}</span>
+          <Chip className={scoreVariant(score)}>{score ?? "—"}</Chip>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {kv("FCP", "first-contentful-paint")}
+          {kv("LCP", "largest-contentful-paint")}
+          {kv("CLS", "cumulative-layout-shift")}
+          {kv("Speed Index", "speed-index")}
+          {kv("TBT", "total-blocking-time")}
+          {kv("Server Response", "server-response-time")}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {renderOne("Mobile", ps.mobile)}
+      {renderOne("Desktop", ps.desktop)}
+      {ps.mobile?.error || ps.desktop?.error ? (
+        <div className="text-xs text-red-600">
+          {ps.mobile?.error ? `Mobile: ${ps.mobile.error}` : null}
+          {ps.desktop?.error ? ` | Desktop: ${ps.desktop.error}` : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ----------------------- AMP Compare (if any) ---------------------- */
+
+function AmpCompare({ cmp }: { cmp?: { rows: any[]; changes: number } }) {
+  if (!cmp?.rows?.length) return <div className="text-sm text-slate-500">No AMP comparison.</div>;
+  const headers = ["Metric", "Non-AMP", "AMP", "Changed"];
+  const rows = cmp.rows.map((r, i) => [
+    <span key={`m${i}`} className="font-medium">{r.label}</span>,
+    String(r.non_amp ?? "—"),
+    String(r.amp ?? "—"),
+    r.changed ? <Chip className="bg-yellow-50 text-yellow-700 ring-1 ring-yellow-200">Yes</Chip>
+              : <Chip className="bg-green-50 text-green-700 ring-1 ring-green-200">No</Chip>,
+  ]);
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-slate-500">Changes detected: {cmp.changes}</div>
+      <DataTable headers={headers} rows={rows} />
+    </div>
+  );
+}
+
+/* ----------------------------- Main UI ----------------------------- */
+
+export default function Results({ data }: { data?: Analysis }) {
+  if (!data) return null;
+
+  const checks = data.checks || {};
+  const og = data.open_graph || {};
+  const tw = data.twitter_card || {};
+
+  /* Network + Security (from available fields) */
+  const isHttps = (() => {
+    try {
+      return new URL(data.url || "").protocol === "https:";
+    } catch {
+      return false;
+    }
+  })();
+
+  return (
+    <div className="space-y-6">
       {/* Overview */}
-      <Card className="p-5 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">Overview</h2>
-          <div className="flex gap-2">
-            {data.has_open_graph && <Badge variant="blue">OpenGraph</Badge>}
-            {data.has_twitter_card && <Badge variant="purple">Twitter</Badge>}
-            {data.sd_types?.has_newsarticle && <Badge variant="blue">NewsArticle</Badge>}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
-          {basic.map(([label, value]) => (
-            <div key={label as string} className="flex flex-col">
-              <span className="text-slate-500 dark:text-slate-400">{label}</span>
-              <span className="font-medium break-all">{String(value ?? "—")}</span>
+      <Section title="Overview" defaultOpen>
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <KeyVal k="URL" v={<Copyable text={data.url} />} />
+            <KeyVal k="Status" v={String(data.status_code ?? "—")} />
+            <KeyVal k="Title" v={<Copyable text={data.title} />} />
+            <KeyVal k="Meta Description" v={<Copyable text={data.description} />} />
+            <KeyVal k="Canonical" v={<Copyable text={data.canonical} />} />
+            <KeyVal
+              k="Viewport Meta"
+              v={data.viewport_meta ? <Copyable text={data.viewport_meta} /> : <em className="text-slate-400">missing</em>}
+            />
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Open Graph</span>
+              <Chip className={boolVariant(!!data.has_open_graph)}>{data.has_open_graph ? "Present" : "Missing"}</Chip>
             </div>
-          ))}
-        </div>
-
-        {/* AMP quick collapsible inside Overview */}
-        {data?.amp_compare && (
-          <Accordion className="mt-4">
-            <AccordionItem title={`AMP vs Non-AMP (${ampChanges} change${ampChanges === 1 ? "" : "s"})`}>
-              <AmpCompare cmp={data.amp_compare} />
-            </AccordionItem>
-          </Accordion>
-        )}
-      </Card>
-
-      {/* Checks */}
-      <Card className="p-5">
-        <h2 className="text-lg font-semibold mb-4">SEO Checks</h2>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          {Object.entries(data.checks || {}).map(([k, v]: any) => (
-            <div key={k} className="rounded-xl border border-slate-200/60 dark:border-slate-800 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium">{labelize(k)}</span>
-                <Badge variant={boolVariant(v?.ok) as any}>{v?.ok ? "OK" : "Check"}</Badge>
-              </div>
-
-              {"value" in v && v.value && (
-                <div className="mt-1 text-slate-600 dark:text-slate-300">{String(v.value)}</div>
-              )}
-
-              {"chars" in v && (
-                <div className="mt-1 text-xs text-slate-500">length: {v.chars}</div>
-              )}
-
-              {k === "alt_coverage" && typeof v?.percent === "number" && (
-                <div className="mt-2">
-                  <div className="h-2 w-full rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
-                    <div
-                      className={`h-full ${
-                        v.percent < 60 ? "bg-rose-500" : v.percent < 80 ? "bg-amber-500" : "bg-green-500"
-                      }`}
-                      style={{ width: `${Math.min(100, Math.max(0, v.percent))}%` }}
-                    />
-                  </div>
-                  <div className="text-xs mt-1 text-slate-500">
-                    {v.with_alt}/{v.total_imgs} images have alt ({v.percent}%)
-                  </div>
-                </div>
-              )}
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Twitter Card</span>
+              <Chip className={boolVariant(!!data.has_twitter_card)}>{data.has_twitter_card ? "Present" : "Missing"}</Chip>
             </div>
-          ))}
-        </div>
-      </Card>
-
-      {/* Structured Data */}
-      <Card className="p-5">
-        <h2 className="text-lg font-semibold mb-4">Structured Data</h2>
-
-        <div className="mb-3 text-sm">
-          <div className="flex flex-wrap gap-2">
-            {(data.sd_types?.types || []).map((t: string) => (
-              <Badge key={t} variant="purple">{t}</Badge>
-            ))}
-          </div>
-        </div>
-
-        <Accordion>
-          <AccordionItem title={`JSON-LD Validation (items: ${data?.json_ld_validation?.summary?.total_items ?? 0})`}>
-            <JsonLdValidation summary={data?.json_ld_validation} />
-          </AccordionItem>
-
-          <AccordionItem title={`JSON-LD (${(data.json_ld || []).length}) • raw`}>
-            <pre className="mt-3">{JSON.stringify(data.json_ld || [], null, 2)}</pre>
-          </AccordionItem>
-          <AccordionItem title={`Microdata (${data.microdata_summary?.count || 0}) • raw`}>
-            <pre className="mt-3">{JSON.stringify(data.microdata || [], null, 2)}</pre>
-          </AccordionItem>
-          <AccordionItem title={`RDFa (${data.rdfa_summary?.count || 0}) • raw`}>
-            <pre className="mt-3">{JSON.stringify(data.rdfa || [], null, 2)}</pre>
-          </AccordionItem>
-        </Accordion>
-      </Card>
-
-      {/* Links & Crawlability */}
-      <Card className="p-5">
-        <h2 className="text-lg font-semibold mb-4">Links & Crawlability</h2>
-
-        {/* Robots & Sitemaps pretty */}
-        <div className="rounded-xl border border-slate-200/60 dark:border-slate-800 p-3 mb-4 text-sm">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">robots.txt:</span>
-            {(() => {
-              const s = data?.crawl_checks?.robots_txt?.status as number | undefined;
-              const u = data?.crawl_checks?.robots_txt?.url as string | undefined;
-              return (
-                <>
-                  <Badge variant={statusVariantFromCode(s) as any}>{s ?? "—"}</Badge>
-                  {u && (
-                    <a href={u} target="_blank" rel="noreferrer" className="text-sky-600 underline">
-                      {u}
-                    </a>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-          <div className="mt-2">
-            <span className="font-medium">Blocked by robots:</span>{" "}
-            <Badge variant={data?.crawl_checks?.blocked_by_robots ? "warning" : "success"}>
-              {data?.crawl_checks?.blocked_by_robots ? "Possibly" : "Allowed"}
-            </Badge>
           </div>
 
-          {/* Which sitemap contains this URL */}
-          <div className="mt-3">
-            <div className="font-medium mb-1">Sitemap membership</div>
-            {data?.sitemap_membership?.found ? (
-              <div className="space-y-1">
-                <div className="text-sm">
-                  Found in:{" "}
-                  {data.sitemap_membership.matches.map((m: string, i: number) => (
-                    <a key={i} className="underline" href={m} target="_blank" rel="noreferrer">
-                      {m}
-                    </a>
-                  ))}
-                </div>
-                <div className="text-xs text-slate-500">
-                  Checked {data.sitemap_membership.checked_count} sitemap{data.sitemap_membership.checked_count === 1 ? "" : "s"}.
-                </div>
+          <div className="space-y-2">
+            <KeyVal k="Load time (ms)" v={String(data.load_time_ms ?? "—")} />
+            <KeyVal k="Page size (bytes)" v={String(data.content_length ?? "—")} />
+            <KeyVal k="Lang" v={checks?.lang?.value || "—"} />
+            <KeyVal k="Charset" v={checks?.charset?.value || "—"} />
+            <KeyVal k="Compression" v={checks?.compression?.value || "none"} />
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">HTTPS</span>
+              <Chip className={boolVariant(isHttps)}>{isHttps ? "Yes" : "No"}</Chip>
+            </div>
+            {data.amp_url ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500">AMP</span>
+                <a href="#amp-compare" className="text-xs underline underline-offset-2 text-sky-700">
+                  Compare AMP vs Non-AMP
+                </a>
               </div>
-            ) : (
-              <div className="text-sm text-slate-500">
-                Not found in discovered sitemaps (checked {data?.sitemap_membership?.checked_count ?? 0}).
-              </div>
-            )}
+            ) : null}
           </div>
         </div>
-
-        {/* Link buckets */}
-        <Accordion>
-          <AccordionItem title={`Internal Links (${(data.internal_links || []).length})`}>
-            <List urls={data.internal_links} />
-          </AccordionItem>
-          <AccordionItem title={`External Links (${(data.external_links || []).length})`}>
-            <List urls={data.external_links} />
-          </AccordionItem>
-          <AccordionItem title={`Nofollow Links (${(data.nofollow_links || []).length})`}>
-            <List urls={data.nofollow_links} />
-          </AccordionItem>
-        </Accordion>
-      </Card>
-
-      {/* Performance + PageSpeed */}
-      <Card className="p-5">
-        <h2 className="text-lg font-semibold mb-2">Performance</h2>
-        <div className="text-sm text-slate-600 dark:text-slate-300">
-          <div>Load: <span className="font-medium">{data?.performance?.load_time_ms ?? data.load_time_ms} ms</span></div>
-          <div>HTTP: <span className="font-medium">{data?.performance?.http_version || "—"}</span></div>
-          <div>Redirects: <span className="font-medium">{data?.performance?.redirects ?? 0}</span></div>
-        </div>
-
-        {data.pagespeed?.enabled && !data.pagespeed?.skipped && (
-          <div className="grid sm:grid-cols-2 gap-4 mt-4">
-            <PSCard label="Mobile" payload={data.pagespeed?.mobile} />
-            <PSCard label="Desktop" payload={data.pagespeed?.desktop} />
-          </div>
-        )}
-        {data.pagespeed?.skipped && (
-          <div className="text-sm text-slate-500 mt-2">PageSpeed skipped for faster scan.</div>
-        )}
-      </Card>
+      </Section>
 
       {/* Rendered Compare */}
-      {data.rendered_diff && (
-        <Card className="p-5">
-          <h2 className="text-lg font-semibold mb-4">Rendered Compare</h2>
-          {!data.rendered_diff.rendered ? (
-            <div className="text-sm text-slate-500">Render skipped or failed.</div>
-          ) : (
-            <Accordion>
-              <AccordionItem title="Matrix (table)">
-                <RenderMatrix matrix={data.rendered_diff.matrix || []} />
-              </AccordionItem>
-              <AccordionItem title="Before / After Summary (table)">
-                <RenderBeforeAfter before={data.rendered_diff.before} after={data.rendered_diff.after} />
-              </AccordionItem>
-              <AccordionItem title="Rendered HTML Excerpt">
-                <button
-                  onClick={() => copy(data.rendered_diff.render_excerpt || "")}
-                  className="mb-2 text-xs underline text-sky-600 dark:text-sky-300"
-                >
-                  Copy excerpt
-                </button>
-                <pre className="max-h-72 overflow-auto">{data.rendered_diff.render_excerpt || ""}</pre>
-              </AccordionItem>
-            </Accordion>
-          )}
-        </Card>
-      )}
+      <Section title="Rendered Compare (JS vs. Static)" defaultOpen>
+        <RenderedCompare diff={data.rendered_diff} />
+      </Section>
 
-      {/* Dedicated AMP Compare card too (in case user misses Overview link) */}
+      {/* Social Metadata */}
+      <Section title="Social Metadata (OG & Twitter)">
+        <div className="grid md:grid-cols-2 gap-6">
+          <div>
+            <h4 className="text-sm font-semibold mb-2">Open Graph</h4>
+            <KeyVal k="Title" v={<Copyable text={og.title} />} />
+            <KeyVal k="Description" v={<Copyable text={og.description} />} />
+            <KeyVal k="Image" v={<Copyable text={og.image} />} />
+            <KeyVal k="URL" v={<Copyable text={og.url} />} />
+            <KeyVal k="Locale / Lang" v={og.locale || "—"} />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold mb-2">Twitter</h4>
+            <KeyVal k="Card" v={tw.card || "—"} />
+            <KeyVal k="Title" v={<Copyable text={tw.title} />} />
+            <KeyVal k="Description" v={<Copyable text={tw.description} />} />
+            <KeyVal k="Image" v={<Copyable text={tw.image} />} />
+            <KeyVal k="URL" v={<Copyable text={tw.url} />} />
+          </div>
+        </div>
+      </Section>
+
+      {/* Content Structure & EEAT */}
+      <Section title="Content Structure & EEAT">
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1 space-y-2">
+            <h4 className="text-sm font-semibold">Headings</h4>
+            <div className="space-y-2">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">H1</div>
+                <ul className="list-disc pl-5 text-sm">
+                  {(data.h1 || []).map((t: string, i: number) => <li key={i}>{t}</li>)}
+                </ul>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">H2</div>
+                <ul className="list-disc pl-5 text-sm space-y-1">
+                  {(data.h2 || []).map((t: string, i: number) => <li key={i}>{t}</li>)}
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-1 space-y-2">
+            <h4 className="text-sm font-semibold">Keywords (Top 20)</h4>
+            <DataTable
+              headers={["Term", "Count", "Density %"]}
+              rows={(data.content_structure?.keywords || []).map((k: any) => [
+                k.term,
+                String(k.count),
+                String(k.density),
+              ])}
+              dense
+            />
+          </div>
+
+          <div className="lg:col-span-1 space-y-2">
+            <h4 className="text-sm font-semibold">EEAT Signals (Heuristic)</h4>
+            <KeyVal k="Word Count" v={String(data.content_structure?.word_count ?? "—")} />
+            <KeyVal
+              k="Score"
+              v={<Chip className={scoreVariant(Number(data.content_structure?.eeat?.score) || 0)}>
+                {String(data.content_structure?.eeat?.score ?? "—")}
+              </Chip>}
+            />
+            <div className="text-xs text-slate-600">
+              {data.content_structure?.eeat?.summary || "—"}
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      {/* Links & Crawlability */}
+      <Section title="Links & Crawlability">
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold mb-1">Indexability Flags</h4>
+            <KeyVal
+              k="Indexable"
+              v={<Chip className={boolVariant(!!data.indexability?.indexable)}>
+                {data.indexability?.indexable ? "index" : "noindex"}
+              </Chip>}
+            />
+            <KeyVal k="Robots meta" v={<Copyable text={data.indexability?.robots_meta_index || ""} />} />
+            <KeyVal
+              k="Follow"
+              v={<Chip className={boolVariant(!!data.indexability?.follow)}>
+                {data.indexability?.follow ? "follow" : "nofollow"}
+              </Chip>}
+            />
+            <KeyVal k="X-Robots-Tag" v={<Copyable text={data.indexability?.x_robots_tag || ""} />} />
+            <KeyVal k="Lang attr" v={data.indexability?.lang || "—"} />
+            <KeyVal k="Charset" v={data.indexability?.charset || "—"} />
+            <KeyVal k="Compression" v={data.indexability?.compression || "none"} />
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold">robots.txt & Sitemaps</h4>
+            <KeyVal k="robots.txt" v={<Copyable text={data.robots_url || ""} />} />
+            <div className="text-xs text-slate-500 mb-1">Discovered sitemaps</div>
+            <ul className="list-disc pl-5 text-sm space-y-1">
+              {(data.crawl_checks?.sitemaps || []).map((sm: any, i: number) => (
+                <li key={i}>
+                  {sm.url}
+                  {sm.status ? <span className="text-xs text-slate-500"> (HTTP {sm.status})</span> : null}
+                  {sm.note ? <span className="text-xs text-slate-500"> ({sm.note})</span> : null}
+                </li>
+              ))}
+              {(!data.crawl_checks?.sitemaps || data.crawl_checks.sitemaps.length === 0) && (
+                <li className="text-slate-500">None</li>
+              )}
+            </ul>
+            {data.sitemap_membership ? (
+              <div className="mt-2">
+                <div className="text-xs text-slate-500 mb-1">This URL in sitemaps?</div>
+                {data.sitemap_membership.found ? (
+                  <ul className="list-disc pl-5 text-sm space-y-1">
+                    {data.sitemap_membership.matches.map((u: string, i: number) => <li key={i}>{u}</li>)}
+                  </ul>
+                ) : (
+                  <div className="text-sm text-slate-500">Not found in checked sitemaps.</div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Link checks */}
+        <div className="grid md:grid-cols-2 gap-6 mt-4">
+          <div>
+            <h4 className="text-sm font-semibold mb-2">Internal Link Checks</h4>
+            <DataTable
+              headers={["URL", "Status"]}
+              rows={(data.link_checks?.internal || []).map((r: any) => [
+                <Copyable key={r.url} text={r.url} />,
+                <Chip className={statusVariantFromCode(r.status)}>{String(r.status ?? "—")}</Chip>,
+              ])}
+            />
+          </div>
+          <div>
+            <h4 className="text-sm font-semibold mb-2">External Link Checks</h4>
+            <DataTable
+              headers={["URL", "Status"]}
+              rows={(data.link_checks?.external || []).map((r: any) => [
+                <Copyable key={r.url} text={r.url} />,
+                <Chip className={statusVariantFromCode(r.status)}>{String(r.status ?? "—")}</Chip>,
+              ])}
+            />
+          </div>
+        </div>
+      </Section>
+
+      {/* Performance */}
+      <Section title="Performance">
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold mb-1">Network Snapshot</h4>
+            <KeyVal k="Load time (ms)" v={String(data.load_time_ms ?? "—")} />
+            <KeyVal k="Page size (bytes)" v={String(data.content_length ?? "—")} />
+            <KeyVal k="HTTP version" v={data.http_version || "—"} />
+            <KeyVal k="Redirects" v={String(data.redirects ?? "—")} />
+          </div>
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold mb-1">Security</h4>
+            <KeyVal
+              k="HTTPS"
+              v={<Chip className={boolVariant(isHttps)}>{isHttps ? "Yes" : "No"}</Chip>}
+            />
+            <KeyVal k="SSL checked" v="No" />
+            <KeyVal k="SSL OK" v="—" />
+          </div>
+        </div>
+        <div className="mt-4">
+          <PageSpeedBlock ps={data.pagespeed} />
+        </div>
+      </Section>
+
+      {/* Images Alt Coverage */}
+      <Section title="Images: Alt Coverage & Samples">
+        <div className="grid md:grid-cols-3 gap-6">
+          <div>
+            <h4 className="text-sm font-semibold mb-2">Coverage</h4>
+            <DataTable
+              headers={["Metric", "Value"]}
+              rows={[
+                ["With alt", String(data.images_alt?.coverage?.with_alt ?? "—")],
+                ["Total images", String(data.images_alt?.coverage?.total_imgs ?? "—")],
+                ["Percent", String(data.images_alt?.coverage?.percent ?? "—")],
+              ]}
+              dense
+            />
+          </div>
+          <div className="md:col-span-1">
+            <h4 className="text-sm font-semibold mb-2">With Alt (sample)</h4>
+            <ul className="text-sm space-y-2">
+              {(data.images_alt?.with_alt || []).map((im: any, i: number) => (
+                <li key={i} className="border rounded p-2">
+                  <div className="text-xs text-slate-500 break-all">{im.src || "—"}</div>
+                  <div className="text-xs text-slate-600">Alt: {im.alt || "—"}</div>
+                  {im.link ? <div className="text-xs text-slate-500 break-all">Link: {im.link}</div> : null}
+                </li>
+              ))}
+              {(!data.images_alt?.with_alt || data.images_alt.with_alt.length === 0) && (
+                <li className="text-sm text-slate-500">None</li>
+              )}
+            </ul>
+          </div>
+          <div className="md:col-span-1">
+            <h4 className="text-sm font-semibold mb-2">Missing Alt (sample)</h4>
+            <ul className="text-sm space-y-2">
+              {(data.images_alt?.missing_alt || []).map((im: any, i: number) => (
+                <li key={i} className="border rounded p-2">
+                  <div className="text-xs text-slate-500 break-all">{im.src || "—"}</div>
+                  {im.link ? <div className="text-xs text-slate-500 break-all">Link: {im.link}</div> : null}
+                </li>
+              ))}
+              {(!data.images_alt?.missing_alt || data.images_alt.missing_alt.length === 0) && (
+                <li className="text-sm text-slate-500">None</li>
+              )}
+            </ul>
+          </div>
+        </div>
+      </Section>
+
+      {/* AMP compare (anchor target) */}
       {data?.amp_compare && (
         <Card id="amp-compare" className="p-5">
           <h2 className="text-lg font-semibold mb-4">AMP vs Non-AMP (full table)</h2>
           <AmpCompare cmp={data.amp_compare} />
         </Card>
       )}
-    </div>
-  );
-}
-
-/* ---------- Sub-components ---------- */
-
-function List({ urls = [] as string[] }) {
-  return (
-    <div className="mt-3 grid gap-2 max-h-72 overflow-auto pr-1">
-      {urls.slice(0, 200).map((u, i) => (
-        <a
-          key={i}
-          href={u}
-          target="_blank"
-          className="text-sm underline break-all decoration-sky-500/60 hover:decoration-sky-600"
-          rel="noreferrer"
-        >
-          {u}
-        </a>
-      ))}
-      {!urls?.length && <div className="text-sm text-slate-500">None</div>}
-    </div>
-  );
-}
-
-function PSCard({ label, payload }: { label: string; payload: any }) {
-  const score: number | undefined = payload?.score;
-  const v = scoreVariant(score);
-  const audits = payload?.metrics || {};
-  const A = (k: string) => audits?.[k];
-
-  const row = (name: string, key: string) => {
-    const audit = A(key);
-    return (
-      <div className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-2 flex items-center justify-between">
-        <span className="text-slate-500 text-xs">{name}</span>
-        <Badge variant={metricVariant(key, audit) as any}>{String(metricValue(audit))}</Badge>
-      </div>
-    );
-  };
-
-  return (
-    <div className="rounded-2xl border border-slate-200/70 dark:border-slate-800 p-4">
-      <div className="flex items-center justify-between">
-        <div className="font-semibold">{label}</div>
-        <Badge variant={v as any} className="text-sm">{score ?? "—"}</Badge>
-      </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        {row("FCP", "first-contentful-paint")}
-        {row("Speed Index", "speed-index")}
-        {row("LCP", "largest-contentful-paint")}
-        {row("TBT", "total-blocking-time")}
-        {row("CLS", "cumulative-layout-shift")}
-        {row("Server RT", "server-response-time")}
-      </div>
-    </div>
-  );
-}
-
-function RenderMatrix({ matrix = [] as any[] }) {
-  const headers = ["Field", "Before", "After", "Changed"];
-  const rows = matrix.map((r) => [r.label, String(r.before ?? "—"), String(r.after ?? "—"), r.changed ? "Yes" : "No"]);
-  return <Table headers={headers} rows={rows} />;
-}
-
-function RenderBeforeAfter({ before, after }: { before: any; after: any }) {
-  const keys = [
-    "title",
-    "description",
-    "canonical",
-    "robots_meta",
-    "h1_count",
-    "h1_first",
-    "has_open_graph",
-    "has_twitter_card",
-    "json_ld_count",
-    "microdata_count",
-    "rdfa_count",
-    "internal_links_count",
-    "external_links_count",
-    "viewport_present",
-  ];
-  const headers = ["Field", "Before", "After"];
-  const rows = keys.map((k) => [labelize(k), String(before?.[k] ?? "—"), String(after?.[k] ?? "—")]);
-  return <Table headers={headers} rows={rows} />;
-}
-
-function AmpCompare({ cmp }: { cmp: any }) {
-  const headers = ["Metric", "Non-AMP", "AMP", "Changed"];
-  const rows = (cmp?.rows || []).map((r: any) => [
-    r.label,
-    String(r.non_amp ?? "—"),
-    String(r.amp ?? "—"),
-    r.changed ? "Yes" : "No",
-  ]);
-  return (
-    <div>
-      <div className="mb-2 text-sm text-slate-600 dark:text-slate-300">
-        Changes detected: <span className="font-medium">{cmp?.changes ?? 0}</span>
-      </div>
-      <Table headers={headers} rows={rows} />
-    </div>
-  );
-}
-
-function JsonLdValidation({ summary }: { summary: any }) {
-  const ok = summary?.summary?.ok_count ?? 0;
-  const total = summary?.summary?.total_items ?? 0;
-  const hasErrors = !!summary?.summary?.has_errors;
-
-  return (
-    <div className="space-y-2 text-sm">
-      <div className="flex items-center gap-2">
-        <Badge variant="success">OK: {ok}</Badge>
-        <Badge variant={hasErrors ? "warning" : "success"}>{hasErrors ? "Has Issues" : "All Good"}</Badge>
-      </div>
-      <div className="mt-2 space-y-2">
-        {(summary?.items || []).map((it: any, i: number) => (
-          <div
-            key={i}
-            className="rounded-lg border border-slate-200/60 dark:border-slate-800 p-3 flex items-start justify-between gap-3"
-          >
-            <div>
-              <div className="font-medium">{it.type || "Unknown"}</div>
-              {it.missing?.length ? (
-                <div className="text-xs text-amber-700 dark:text-amber-200 mt-1">
-                  Missing: {it.missing.join(", ")}
-                </div>
-              ) : (
-                <div className="text-xs text-slate-500">All required fields present</div>
-              )}
-            </div>
-            <Badge variant={it.ok ? "success" : "warning"}>{it.ok ? "OK" : "Fix"}</Badge>
-          </div>
-        ))}
-        {!total && <div className="text-xs text-slate-500">No JSON-LD items detected.</div>}
-      </div>
     </div>
   );
 }
