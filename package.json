@@ -9,24 +9,16 @@
     "lint": "next lint",
     "postinstall": "playwright install chromium"
   },
- "dependencies": {
+  "dependencies": {
     "next": "14.2.5",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "playwright": "^1.46.0",
     "cheerio": "1.0.0-rc.12"
-   
   },
-   "overrides": {
+  "overrides": {
     "cheerio": "1.0.0-rc.12",
     "undici": "6.19.8"
-  },
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start -p $PORT",
-    "lint": "next lint",
-    "postinstall": "playwright install chromium"
   },
   "devDependencies": {
     "autoprefixer": "^10.4.18",
