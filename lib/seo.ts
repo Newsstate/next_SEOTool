@@ -1,3 +1,4 @@
+// lib/seo.ts
 import * as cheerio from "cheerio";
 import type { Cheerio, Element } from "cheerio";
 
@@ -58,6 +59,27 @@ export async function fetchRaw(target: string): Promise<FetchResult> {
 function text($el: Cheerio<Element>): string {
   return ($el.text() || "").trim().replace(/\s+/g, " ");
 }
+
+/** Simple whitespace normalize */
+function textify(s: string) {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+/** Resolve absolute URL safely */
+function abs(base: string, href?: string | null): string | null {
+  try {
+    if (!href) return null;
+    return new URL(href, base).toString();
+  } catch {
+    return href || null;
+  }
+}
+
+/** Lightweight EN stopwords for keyword density */
+const STOP = new Set([
+  "the","a","an","and","or","of","to","in","on","for","is","it","as","at","by","be","are","was","were",
+  "this","that","with","from","but","not","your","you","we","our","they","their","i","me","my"
+]);
 
 /** JSON parsing that tolerates trailing commas a bit */
 function safeJson(s: string) {
@@ -214,7 +236,29 @@ export function summarizeTypes(jsonld: any[], microdata: any[], rdfa: any[]) {
   return { types: Array.from(types).sort(), has_newsarticle };
 }
 
-/** Parse the static HTML and compute SEO checks */
+/** Robots helpers */
+export function parseRobotsMeta(val?: string | null) {
+  const d = { noindex: false, nofollow: false };
+  if (!val) return d;
+  const toks = (val || "")
+    .toLowerCase()
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  d.noindex = toks.includes("noindex");
+  d.nofollow = toks.includes("nofollow");
+  return d;
+}
+export function parseXRobots(val?: string | null) {
+  const d = { noindex: false, nofollow: false };
+  if (!val) return d;
+  const s = (val || "").toLowerCase();
+  d.noindex = s.includes("noindex");
+  d.nofollow = s.includes("nofollow");
+  return d;
+}
+
+/** Parse the static HTML and compute SEO checks (ENHANCED) */
 export function parseHTML(
   url: string,
   body: string,
@@ -223,8 +267,8 @@ export function parseHTML(
 ) {
   const $ = cheerio.load(body);
 
-  // --- Meta basics (no head variable to avoid Document/Element typing issues)
-  const title = $("head > title").text() || null;
+  // --- Meta basics (avoid assigning $("head") to prevent Element/Document type mismatch)
+  const title = $("head > title").text() ? text($("head > title") as Cheerio<Element>) : null;
 
   let desc: string | null = null;
   let robots: string | null = null;
@@ -232,64 +276,71 @@ export function parseHTML(
     const name =
       ((el as any).attribs?.["name"] || (el as any).attribs?.["property"] || "").toLowerCase();
     if (name === "description" || name === "og:description") {
-      desc = desc || (el as any).attribs?.["content"];
+      desc = desc || (el as any).attribs?.["content"] || null;
     }
     if (name === "robots") {
-      robots = (el as any).attribs?.["content"];
+      robots = (el as any).attribs?.["content"] || null;
     }
   });
 
   // Canonical
-  let canon: string | null = null;
-  const linkCanon = $('head link[rel*="canonical"]').attr("href");
-  if (linkCanon) {
-    try {
-      canon = new URL(linkCanon, url).toString();
-    } catch {}
+  let canonical: string | null = null;
+  {
+    const linkCanon = $('head link[rel*="canonical"]').attr("href");
+    if (linkCanon) canonical = abs(url, linkCanon);
   }
 
   // AMP
-  const ampLink = $('head link[rel*="amphtml"]').attr("href");
-  const amp_url = ampLink ? new URL(ampLink, url).toString() : null;
+  const amp_href = $('head link[rel*="amphtml"]').attr("href") || null;
+  const amp_url = amp_href ? abs(url, amp_href) : null;
   const is_amp =
-    Boolean(ampLink) || body.slice(0, 5000).toLowerCase().includes("amp-boilerplate");
+    Boolean(amp_href) || body.slice(0, 5000).toLowerCase().includes("amp-boilerplate");
 
   // Headings
-  const h1 = $("h1")
-    .map((_, h) => text($(h) as Cheerio<Element>))
-    .get();
-  const h2 = $("h2")
-    .map((_, h) => text($(h) as Cheerio<Element>))
-    .get();
+  const h1 = $("h1").map((_, h) => text($(h) as Cheerio<Element>)).get();
+  const h2 = $("h2").map((_, h) => text($(h) as Cheerio<Element>)).get();
 
-  // Links
+  // Links (internal/external/nofollow)
   const parsed = new URL(url);
   const baseHost = parsed.host.toLowerCase();
-  const aHrefs = $("a")
-    .map((_, a) => ((a as any).attribs?.["href"] || "") as string)
-    .get();
-
   const internal_links: string[] = [];
   const external_links: string[] = [];
   const nofollow_links: string[] = [];
 
-  aHrefs.forEach((href) => {
-    if (!href) return;
+  $("a[href]").each((_, a) => {
+    const href = (a as any).attribs?.["href"] || "";
+    const absu = abs(url, href);
+    if (!absu) return;
     try {
-      const abs = new URL(href, url).toString();
-      const host = new URL(abs).host.toLowerCase();
-      if (host === baseHost) internal_links.push(abs);
-      else external_links.push(abs);
+      const host = new URL(absu).host.toLowerCase();
+      if (host === baseHost) internal_links.push(absu);
+      else external_links.push(absu);
     } catch {}
+    const rel = ((a as any).attribs?.["rel"] || "").toLowerCase();
+    if (rel.includes("nofollow")) nofollow_links.push(absu);
   });
 
-  $('a[rel*="nofollow"]').each((_, a) => {
-    const href = (a as any).attribs?.["href"] || "";
-    if (!href) return;
-    try {
-      nofollow_links.push(new URL(href, url).toString());
-    } catch {}
-  });
+  // --- Open Graph & Twitter (full objects)
+  const htmlTag = $("html").get(0) as any;
+  const langAttr = htmlTag?.attribs?.["lang"] || null;
+
+  const og = {
+    title: $('head meta[property="og:title"]').attr("content") || title,
+    description: $('head meta[property="og:description"]').attr("content") || desc,
+    image: $('head meta[property="og:image"]').attr("content") || null,
+    url: $('head meta[property="og:url"]').attr("content") || canonical || url,
+    locale: $('head meta[property="og:locale"]').attr("content") || langAttr || null,
+  };
+  const twitter = {
+    card: $('head meta[name="twitter:card"]').attr("content") || null,
+    title: $('head meta[name="twitter:title"]').attr("content") || og.title || title,
+    description: $('head meta[name="twitter:description"]').attr("content") || og.description || desc,
+    image: $('head meta[name="twitter:image"], head meta[name="twitter:image:src"]').attr("content") || og.image || null,
+    url: $('head meta[name="twitter:url"]').attr("content") || og.url,
+  };
+
+  // Viewport (full content)
+  const viewport_meta = $('head meta[name="viewport"]').attr("content") || null;
 
   // Structured data
   const sd = extractStructured(body, url);
@@ -323,58 +374,64 @@ export function parseHTML(
   checks.meta_description_length = { chars: desc_len, ok: desc_len >= 70 && desc_len <= 160 };
   checks.h1_count = { count: h1.length, ok: h1.length === 1 };
 
-  const viewport = $('head meta[name="viewport"]').length > 0;
   checks.viewport_meta = {
-    present: viewport,
-    ok: viewport,
-    value: viewport ? "present" : "missing",
+    present: !!viewport_meta,
+    ok: !!viewport_meta,
+    value: viewport_meta || "missing",
   };
 
   checks.canonical = {
-    present: !!canon,
-    absolute: !!(canon && canon.startsWith("http")),
-    self_ref: canon === url,
-    ok: !!(canon && canon.startsWith("http")),
-    value: canon || "",
+    present: !!canonical,
+    absolute: !!(canonical && canonical.startsWith("http")),
+    self_ref: canonical === url,
+    ok: !!(canonical && canonical.startsWith("http")),
+    value: canonical || "",
   };
 
-  const imgs = $("img").get();
-  const with_alt = imgs.filter(
-    (im: any) => ((im as any).attribs?.["alt"] || "").trim().length > 0
-  ).length;
+  // Image alt coverage + lists (with/without alt, plus anchor link if present)
+  const images_with_alt: Array<{src:string|null; link:string|null; alt:string}> = [];
+  const images_missing_alt: Array<{src:string|null; link:string|null}> = [];
+  $("img").each((_, im) => {
+    const $im = $(im);
+    const alt = ($im.attr("alt") || "").trim();
+    const src = abs(url, $im.attr("src") || $im.attr("data-src") || null);
+    const parentLink = $im.closest("a").first();
+    const link = parentLink.length ? abs(url, parentLink.attr("href") || "") : null;
+    if (alt) images_with_alt.push({ src, link, alt });
+    else images_missing_alt.push({ src, link });
+  });
+
+  const imgsTotal = images_with_alt.length + images_missing_alt.length;
   checks.alt_coverage = {
-    with_alt,
-    total_imgs: imgs.length,
-    percent: imgs.length ? Math.round((with_alt / imgs.length) * 1000) / 10 : 100.0,
-    ok: imgs.length ? with_alt / imgs.length >= 0.8 : true,
+    with_alt: images_with_alt.length,
+    total_imgs: imgsTotal,
+    percent: imgsTotal ? Math.round((images_with_alt.length / imgsTotal) * 1000) / 10 : 100.0,
+    ok: imgsTotal ? (images_with_alt.length / imgsTotal) >= 0.8 : true,
   };
 
   // Lang & charset
-  const htmlTag = $("html").get(0) as any;
-  const langVal = htmlTag?.attribs?.["lang"];
+  const langVal = langAttr;
   checks.lang = { value: langVal, present: !!langVal, ok: !!langVal };
 
   let charset: string | null = null;
   const mc = $("head meta[charset]").attr("charset");
   if (mc) charset = mc;
   else {
-    const ct = $('head meta[http-equiv="Content-Type"]').attr("content");
-    if (ct) {
-      const part = ct
-        .split(";")
-        .map((x) => x.trim().toLowerCase())
-        .find((x) => x.startsWith("charset="));
-      if (part) charset = part.split("=", 1)[1];
-    }
+    const ct = $('head meta[http-equiv="Content-Type"]').attr("content") || "";
+    const part = ct
+      .split(";")
+      .map((x) => x.trim().toLowerCase())
+      .find((x) => x.startsWith("charset="));
+    if (part) charset = part.split("=", 2)[1];
   }
   checks.charset = { value: charset, present: !!charset, ok: !!charset };
 
   // Compression
   const enc = (headers["content-encoding"] || "").toLowerCase();
-  const compression_value = enc.includes("gzip")
-    ? "gzip"
-    : enc.includes("br")
+  const compression_value = enc.includes("br")
     ? "br"
+    : enc.includes("gzip")
+    ? "gzip"
     : "none";
   checks.compression = {
     gzip: enc.includes("gzip"),
@@ -439,8 +496,67 @@ export function parseHTML(
     ok: !noindex_flag,
   };
 
+  // --- Content structure: body text, top keywords, heuristic EEAT
+  const $bodyClone = $("body").clone();
+  $bodyClone.find("script,style,noscript,svg,nav,footer,header,form,iframe").remove();
+  const bodyText = textify($bodyClone.text() || "");
+  const tokens = (bodyText.toLowerCase().match(/\b[a-z0-9][a-z0-9-]*\b/g) || [])
+    .filter((w) => !STOP.has(w) && w.length > 2);
+  const counts = new Map<string, number>();
+  tokens.forEach((w) => counts.set(w, (counts.get(w) || 0) + 1));
+  const word_count = tokens.length;
+  const top_keywords = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([term, count]) => ({
+      term,
+      count,
+      density: +(((count / Math.max(1, word_count)) * 100).toFixed(2)),
+    }));
+
+  const eeat_signals = {
+    author_found:
+      !!$('meta[name="author"]').length ||
+      !!$('[itemprop="author"]').length ||
+      !!$('a[rel="author"]').length ||
+      !!$(".author, .byline").length,
+    org_schema: (jsonld || []).some((x: any) => {
+      const t = Array.isArray(x?.["@type"]) ? x["@type"][0] : x?.["@type"];
+      return /Organization|LocalBusiness/i.test(String(t || ""));
+    }),
+    date_published:
+      !!$('meta[property="article:published_time"]').length ||
+      !!$("time[datetime]").length ||
+      !!$('[itemprop="datePublished"]').length,
+    contact_link: !!$('a[href*="contact"]').length,
+    about_link: !!$('a[href*="about"]').length,
+    references_outbound: external_links.length > 3,
+  };
+  const eeat_score = Math.round(
+    (Number(eeat_signals.author_found) +
+      Number(eeat_signals.org_schema) +
+      Number(eeat_signals.date_published) +
+      Number(eeat_signals.contact_link) +
+      Number(eeat_signals.about_link) +
+      (eeat_signals.references_outbound ? 1 : 0)) /
+      6 *
+      100
+  );
+
+  // robots URL
   const robots_url =
     parsed.protocol && parsed.host ? `${parsed.protocol}//${parsed.host}/robots.txt` : null;
+
+  // Explicit indexability flags object for UI
+  const indexability = {
+    indexable: !noindex_flag,
+    robots_meta_index: robots || "",
+    follow: !nofollow_flag,
+    x_robots_tag: xr_raw || "",
+    lang: langVal || null,
+    charset,
+    compression: compression_value,
+  };
 
   return {
     url,
@@ -451,15 +567,21 @@ export function parseHTML(
     ),
     title,
     description: desc,
-    canonical: canon,
+    canonical: canonical,
     robots_meta: robots,
+
+    // AMP
     is_amp,
     amp_url,
+
+    // headings & links
     h1,
     h2,
     internal_links: internal_links.slice(0, 200),
     external_links: external_links.slice(0, 200),
     nofollow_links: nofollow_links.slice(0, 200),
+
+    // structured data
     json_ld: jsonld,
     json_ld_validation,
     microdata,
@@ -467,34 +589,50 @@ export function parseHTML(
     rdfa,
     rdfa_summary: { count: rdfa.length },
     sd_types,
+
+    // social + viewport
     has_open_graph: Object.values(og_present).some(Boolean),
     has_twitter_card: Object.values(tw_present).some(Boolean),
-    robots_url,
-    checks,
-    hreflang,
-  };
-}
+    open_graph: og,
+    twitter_card: twitter,
+    viewport_meta,
 
-/** Robots helpers */
-export function parseRobotsMeta(val?: string | null) {
-  const d = { noindex: false, nofollow: false };
-  if (!val) return d;
-  const toks = (val || "")
-    .toLowerCase()
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  d.noindex = toks.includes("noindex");
-  d.nofollow = toks.includes("nofollow");
-  return d;
-}
-export function parseXRobots(val?: string | null) {
-  const d = { noindex: false, nofollow: false };
-  if (!val) return d;
-  const s = (val || "").toLowerCase();
-  d.noindex = s.includes("noindex");
-  d.nofollow = s.includes("nofollow");
-  return d;
+    // images alt lists
+    images_alt: {
+      coverage: checks.alt_coverage,
+      with_alt: images_with_alt.slice(0, 100),
+      missing_alt: images_missing_alt.slice(0, 100),
+    },
+
+    // indexability (explicit)
+    indexability,
+
+    // robots + hreflang
+    robots_url,
+    hreflang,
+
+    // content structure + EEAT (heuristic)
+    content_structure: {
+      h1,
+      h2,
+      word_count,
+      keywords: top_keywords,
+      eeat: {
+        score: eeat_score,
+        signals: eeat_signals,
+        summary:
+          `Heuristic EEAT signals: ${
+            Object.entries(eeat_signals)
+              .filter(([, v]) => v)
+              .map(([k]) => k.replace(/_/g, " "))
+              .join(", ") || "none found"
+          }`,
+      },
+    },
+
+    // original checks
+    checks,
+  };
 }
 
 /** Sample link HEAD/GET checks */
@@ -518,6 +656,7 @@ export async function linkAudit(data: any) {
         } as RequestInit);
         item.status = r2.status;
         item.final_url = (r2 as any).url;
+        // note: we skip redirects count for simplicity
       } else {
         item.status = r.status;
         item.final_url = (r as any).url;
@@ -635,7 +774,11 @@ export function buildCompareRows(nonAmp: any, amp: any) {
  * Find which sitemap(s) contain the target URL.
  * Checks robots-discovered sitemaps; expands one level of sitemapindex.
  */
-export async function findSitemapMembership(targetUrl: string, sitemaps: string[], fetcher?: typeof fetch) {
+export async function findSitemapMembership(
+  targetUrl: string,
+  sitemaps: string[],
+  fetcher?: typeof fetch
+) {
   const f = fetcher || fetch;
   const norm = (u: string) => {
     try {
@@ -658,15 +801,20 @@ export async function findSitemapMembership(targetUrl: string, sitemaps: string[
     const r = await f(u, { cache: "no-store" });
     if (!r.ok) return null;
     const ct = r.headers.get("content-type") || "";
-    if (!/xml|text\/plain|application\/octet-stream/i.test(ct) && !u.endsWith(".xml")) {
+    if (
+      !/xml|text\/plain|application\/octet-stream/i.test(ct) &&
+      !u.endsWith(".xml")
+    ) {
       // still try reading; some servers don't set XML content-type
     }
     return await r.text();
   };
 
   const extractLocs = (xml: string, tag: "url" | "sitemap") => {
-    const re = tag === "url" ? /<url>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/url>/gi
-                              : /<sitemap>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/sitemap>/gi;
+    const re =
+      tag === "url"
+        ? /<url>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/url>/gi
+        : /<sitemap>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/sitemap>/gi;
     const out: string[] = [];
     let m;
     while ((m = re.exec(xml))) {
