@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/Input";
 import { Results } from "@/components/Results";
 import { Loader } from "@/components/Loader";
 import { ProgressBar } from "@/components/Progress";
+import { safeCheckValue } from "@/lib/format";
+
 
 type StageKey = "fetch" | "parse" | "links" | "robots" | "pagespeed" | "rendered";
 
