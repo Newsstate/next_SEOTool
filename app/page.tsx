@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Switch } from "@/components/ui/Switch";
 import { Results } from "@/components/Results";
 import { Loader } from "@/components/Loader";
 import { ProgressBar } from "@/components/Progress";
@@ -14,17 +13,14 @@ type StageKey = "fetch" | "parse" | "links" | "robots" | "pagespeed" | "rendered
 export default function Page() {
   const [url, setUrl] = useState("");
   const [doRendered, setDoRendered] = useState(true);
+  const [doPagespeed, setDoPagespeed] = useState(true);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [stages, setStages] = useState<Partial<Record<StageKey, "idle" | "start" | "done" | "error" | "skipped">>>({});
   const evtRef = useRef<EventSource | null>(null);
 
-  useEffect(() => {
-    return () => {
-      evtRef.current?.close();
-    };
-  }, []);
+  useEffect(() => () => evtRef.current?.close(), []);
 
   function resetStages() {
     setStages({ fetch: "idle", parse: "idle", links: "idle", robots: "idle", pagespeed: "idle", rendered: "idle" });
@@ -37,8 +33,11 @@ export default function Page() {
     setData(null);
     resetStages();
 
-    // Use SSE stream to get live progress
-    const qs = new URLSearchParams({ url, do_rendered_check: String(doRendered) });
+    const qs = new URLSearchParams({
+      url,
+      do_rendered_check: String(doRendered),
+      do_pagespeed: String(doPagespeed),
+    });
     const es = new EventSource(`/api/analyze/stream?${qs.toString()}`);
     evtRef.current = es;
 
@@ -89,11 +88,22 @@ export default function Page() {
               required
               type="url"
             />
-            <div className="flex items-center gap-2 text-sm">
-              <Switch checked={doRendered} onCheckedChange={setDoRendered} />
-              <span>Render with Playwright first (fallback to static)</span>
+
+            <div className="flex flex-col gap-2 text-sm">
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={doRendered} onChange={(e) => setDoRendered(e.target.checked)} />
+                <span>Rendered Compare (Playwright)</span>
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input type="checkbox" checked={doPagespeed} onChange={(e) => setDoPagespeed(e.target.checked)} />
+                <span>PageSpeed Snapshot</span>
+              </label>
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                Want a faster scan? Untick PageSpeed and Rendered.
+              </div>
             </div>
           </div>
+
           <div className="flex items-end">
             <Button type="submit" className="w-full sm:w-auto" disabled={loading}>
               {loading ? "Analyzing…" : "Analyze"}
@@ -102,9 +112,9 @@ export default function Page() {
         </form>
       </Card>
 
-      {/* Progress bar (always visible during scans) */}
+      {/* Progress */}
       {(loading || Object.values(stages).some((s) => s && s !== "idle")) && (
-        <ProgressBar stages={stages} showRendered={doRendered} />
+        <ProgressBar stages={stages} showRendered={doRendered} showPageSpeed={doPagespeed} />
       )}
 
       {loading && <Loader />}
