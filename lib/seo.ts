@@ -575,3 +575,155 @@ export async function robotsAudit(data: any) {
   }
   return out;
 }
+
+// ---- Append to lib/seo.ts ---------------------------------------------------
+
+export function compactSummary(d: any) {
+  const checks = d?.checks || {};
+  return {
+    url: d?.url,
+    status: d?.status_code,
+    load_ms: d?.load_time_ms,
+    size: d?.content_length,
+    title: d?.title,
+    description: d?.description,
+    canonical: d?.canonical,
+    h1_count: (d?.h1 || []).length,
+    h1_first: (d?.h1 || [null])[0] ?? null,
+    og: !!d?.has_open_graph,
+    tw: !!d?.has_twitter_card,
+    jsonld_count: (d?.json_ld || []).length,
+    internal_count: (d?.internal_links || []).length,
+    external_count: (d?.external_links || []).length,
+    viewport: !!checks?.viewport_meta?.present,
+    is_amp: !!d?.is_amp,
+    amp_url: d?.amp_url,
+  };
+}
+
+export function buildCompareRows(nonAmp: any, amp: any) {
+  const a = compactSummary(nonAmp);
+  const b = compactSummary(amp);
+  const row = (label: string, key: keyof typeof a) => ({
+    label,
+    non_amp: (a as any)[key],
+    amp: (b as any)[key],
+    changed: (a as any)[key] !== (b as any)[key],
+  });
+  const rows = [
+    row("URL", "url"),
+    row("Status", "status"),
+    row("Load (ms)", "load_ms"),
+    row("Page size (bytes)", "size"),
+    row("Title", "title"),
+    row("Meta description", "description"),
+    row("Canonical", "canonical"),
+    row("H1 count", "h1_count"),
+    row("First H1", "h1_first"),
+    row("Open Graph present", "og"),
+    row("Twitter Card present", "tw"),
+    row("JSON-LD count", "jsonld_count"),
+    row("Internal link count", "internal_count"),
+    row("External link count", "external_count"),
+    row("Viewport meta present", "viewport"),
+  ];
+  const changes = rows.filter((r) => r.changed).length;
+  return { rows, changes };
+}
+
+/**
+ * Find which sitemap(s) contain the target URL.
+ * Checks robots-discovered sitemaps; expands one level of sitemapindex.
+ */
+export async function findSitemapMembership(targetUrl: string, sitemaps: string[], fetcher?: typeof fetch) {
+  const f = fetcher || fetch;
+  const norm = (u: string) => {
+    try {
+      const x = new URL(u);
+      // normalize trailing slash
+      x.pathname = x.pathname.replace(/\/+$/, "");
+      return x.toString();
+    } catch {
+      return u;
+    }
+  };
+  const tnorm = norm(targetUrl);
+
+  const checked: string[] = [];
+  const matches: string[] = [];
+  const queue: string[] = [...new Set(sitemaps || [])].slice(0, 10); // limit
+  const children: string[] = [];
+
+  const getText = async (u: string) => {
+    const r = await f(u, { cache: "no-store" });
+    if (!r.ok) return null;
+    const ct = r.headers.get("content-type") || "";
+    if (!/xml|text\/plain|application\/octet-stream/i.test(ct) && !u.endsWith(".xml")) {
+      // still try reading; some servers don't set XML content-type
+    }
+    return await r.text();
+  };
+
+  const extractLocs = (xml: string, tag: "url" | "sitemap") => {
+    const re = tag === "url" ? /<url>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/url>/gi
+                              : /<sitemap>[\s\S]*?<loc>([\s\S]*?)<\/loc>[\s\S]*?<\/sitemap>/gi;
+    const out: string[] = [];
+    let m;
+    while ((m = re.exec(xml))) {
+      const loc = (m[1] || "").trim();
+      if (loc) out.push(loc);
+    }
+    return out;
+  };
+
+  while (queue.length && checked.length < 20 && matches.length < 5) {
+    const u = queue.shift()!;
+    checked.push(u);
+    try {
+      const xml = await getText(u);
+      if (!xml) continue;
+      const isIndex = /<sitemapindex/i.test(xml);
+      if (isIndex) {
+        const locs = extractLocs(xml, "sitemap").slice(0, 25);
+        for (const loc of locs) if (!children.includes(loc)) children.push(loc);
+        continue;
+      }
+      // regular urlset
+      const locs = extractLocs(xml, "url");
+      for (const loc of locs) {
+        const n = norm(new URL(loc, u).toString());
+        if (n === tnorm) {
+          matches.push(u);
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // If index children exist, scan a few of them too (light scan)
+  for (const child of children.slice(0, 10)) {
+    if (checked.length >= 30 || matches.length >= 5) break;
+    checked.push(child);
+    try {
+      const xml = await getText(child);
+      if (!xml) continue;
+      const locs = extractLocs(xml, "url");
+      for (const loc of locs) {
+        const n = norm(new URL(loc, child).toString());
+        if (n === tnorm) {
+          matches.push(child);
+          break;
+        }
+      }
+    } catch {}
+  }
+
+  return {
+    found: matches.length > 0,
+    matches,
+    checked_count: checked.length,
+    checked,
+  };
+}
