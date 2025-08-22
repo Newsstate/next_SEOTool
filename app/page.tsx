@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Results } from "@/components/Results";
+import Results from "@/components/Results";
 import { Loader } from "@/components/Loader";
 import { ProgressBar } from "@/components/Progress";
 import { safeCheckValue } from "@/lib/format";
