@@ -55,7 +55,7 @@ export function scoreBand(score?: number | null) {
   if (score < 60) return "bad" as const;    // red
   if (score < 80) return "warn" as const;   // yellow
   if (score < 90) return "good" as const;   // green
-  return "great" as const;                   // emerald
+  return "great" as const;                  // emerald
 }
 
 /** Old callers may use scoreClass; keep for compatibility. */
@@ -112,80 +112,58 @@ function toNumber(x: any): number | null {
     return isNaN(n) ? null : n;
   }
   if (typeof x === "object") {
-    if (typeof x.numericValue === "number") return x.numericValue;
-    if (typeof x.score === "number" && typeof x.numericUnit === "string") {
-      // sometimes PSI gives score + numericUnit
-      return null; // prefer numericValue; fall through to displayValue
-    }
-    if (typeof x.displayValue === "string") {
-      const m = x.displayValue.match(/([\d.]+)/);
+    if (typeof (x as any).numericValue === "number") return (x as any).numericValue;
+    if (typeof (x as any).displayValue === "string") {
+      const m = (x as any).displayValue.match(/([\d.]+)/);
       return m ? Number(m[1]) : null;
     }
   }
   return null;
 }
 
-/* Resolve (id, value) whether the caller passes (audit) or (metricId, value) */
-function resolveMetricArgs(a: any, b?: any): { id: string; value: any } {
-  if (b === undefined) {
-    const audit = a;
-    const id = typeof audit?.id === "string" ? audit.id.toLowerCase() : "";
-    return { id, value: audit };
-  }
-  return { id: String(a).toLowerCase(), value: b };
-}
-
-/** Color classes for a specific Lighthouse metric — supports (audit) or (metricId, value) */
-// overloads
-export function metricVariant(audit: any): string;
-export function metricVariant(metricId: string, value: any): string;
-export function metricVariant(a: any, b?: any): string {
-  const { id, value } = resolveMetricArgs(a, b);
+/** Color classes for a specific Lighthouse metric by id */
+export function metricVariant(metricId: string, value: any): string {
+  const id = metricId.toLowerCase();
   const t = METRIC_THRESHOLDS[id];
   if (!t) return variant("slate");
 
   const num = toNumber(value);
   if (num == null) return variant("slate");
 
-  // CLS unitless; others typically ms
+  const v = num;
+
   if (id === "cumulative-layout-shift") {
-    if (num <= t.good) return variant("green");
-    if (num <= t.ni)   return variant("yellow");
+    if (v <= t.good) return variant("green");
+    if (v <= t.ni)   return variant("yellow");
     return variant("red");
   } else {
-    if (num <= t.good) return variant("green");
-    if (num <= t.ni)   return variant("yellow");
+    if (v <= t.good) return variant("green");
+    if (v <= t.ni)   return variant("yellow");
     return variant("red");
   }
 }
 
-/** Human-readable value for a Lighthouse metric — supports (audit) or (metricId, value) */
-// overloads
-export function metricValue(audit: any): string;
-export function metricValue(metricId: string, value: any): string;
-export function metricValue(a: any, b?: any): string {
-  const { id, value } = resolveMetricArgs(a, b);
+/** Human-readable value for a Lighthouse metric */
+export function metricValue(metricId: string, value: any): string {
+  const id = metricId.toLowerCase();
   const t = METRIC_THRESHOLDS[id];
-  const n = toNumber(value);
-
-  // No thresholds known → show displayValue or number
   if (!t) {
     if (value && typeof value.displayValue === "string") return value.displayValue;
+    const n = toNumber(value);
     return n == null ? "—" : String(n);
   }
 
+  const n = toNumber(value);
   if (n == null) {
     if (value && typeof value.displayValue === "string") return value.displayValue;
     return "—";
   }
 
   if (id === "cumulative-layout-shift") {
-    // 2 decimals, trim trailing zeros
     const s = (Math.round(n * 100) / 100).toFixed(2);
     return s.replace(/\.?0+$/, "");
   }
 
-  // ms → s if large
   if (t.unit === "ms") {
     if (n >= 1000) {
       const s = Math.round((n / 1000) * 100) / 100;
@@ -280,14 +258,11 @@ export const Table = DataTable;
 // Default export (optional)
 export default DataTable;
 
-/* ---------- safe property helpers ---------- */
-
-/** True if v is a non-null object. */
+/* ---------- safe property helpers (NEW) ---------- */
 export function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object";
 }
 
-/** Safely extract a printable value from either a primitive or { value, ok } objects. */
 export function safeCheckValue(v: unknown): string {
   try {
     if (!isRecord(v)) return v == null ? "—" : String(v);
@@ -301,4 +276,3 @@ export function safeCheckValue(v: unknown): string {
     return "—";
   }
 }
-
